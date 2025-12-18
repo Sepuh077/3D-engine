@@ -55,7 +55,7 @@ class Entity:
 
     @property
     def position(self):
-        return self._position
+        return self._position.copy()
 
     @position.setter
     def position(self, value: Union[tuple, Vec3]):

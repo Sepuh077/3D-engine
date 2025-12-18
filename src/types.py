@@ -31,6 +31,9 @@ class Vec3:
     def z(self):
         return self.position[2]
 
+    def copy(self):
+        return Vec3(*self)
+
     def __getitem__(self, index):
         return self.position[index]
 
