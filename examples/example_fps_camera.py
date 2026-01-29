@@ -3,10 +3,18 @@ Example: First-person camera controls
 Demonstrates FPS-style camera movement with mouse look.
 """
 import sys
-sys.path.insert(0, '..')
+from pathlib import Path
+import math
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import random
 
 from src.engine3d import Window3D, Keys, Color
 from src.engine3d.object3d import create_cube, create_plane
+from src.physics.collision import objects_collide
 
 
 class FPSCameraExample(Window3D):
@@ -18,21 +26,22 @@ class FPSCameraExample(Window3D):
         floor.position = (0, 0, 0)
         
         # Create some objects to look at
-        for x in range(-20, 21, 5):
-            for z in range(-20, 21, 5):
+        for x in range(-40, 41, 3):
+            for z in range(-40, 41, 3):
                 if x == 0 and z == 0:
                     continue
                 cube = self.add_object(create_cube(1.0, color=Color.random_bright()))
                 cube.position = (x, 0.5, z)
         
         # Create taller pillars
+        values = ["cylinder", "cube", "sphere"]
         for i in range(4):
-            pillar = self.add_object(create_cube(2.0, color=Color.BLUE))
-            angle = i * 3.14159 / 2
+            pillar = self.add_object(create_cube(2.0, color=Color.BLUE, collider_type=random.choice(values)))
+            angle = i * math.pi / 2
             pillar.position = (
-                15 * __import__('math').cos(angle),
+                15 * math.cos(angle),
                 2,
-                15 * __import__('math').sin(angle)
+                15 * math.sin(angle)
             )
             pillar.scale_xyz = (2, 4, 2)
         
@@ -47,6 +56,7 @@ class FPSCameraExample(Window3D):
         # Camera setup - first person style
         self.camera.position = (0, 2, 10)
         self.camera.look_at((0, 2, 0))
+        self.camera_obj = create_cube(1, self.camera.position)
         
         # Mouse look settings
         self.mouse_sensitivity = 0.002
@@ -60,9 +70,7 @@ class FPSCameraExample(Window3D):
         self.yaw = 0
         self.pitch = 0
     
-    def on_update(self, delta_time):
-        import math
-        
+    def on_update(self, delta_time):        
         # Movement
         speed = self.move_speed * delta_time
         
@@ -78,11 +86,17 @@ class FPSCameraExample(Window3D):
             self.camera.move_up(speed)
         if self.is_key_pressed(Keys.LSHIFT):
             self.camera.move_up(-speed)
+
+        self.camera_obj.position = self.camera.position
         
         # Rotate all cubes
         for obj in self.objects:
-            if obj.name == "cube":
-                obj.rotation_y += delta_time * 20
+            # if obj.name == "cube":
+            obj.rotation_y += delta_time * 20
+            obj.rotation_x += delta_time * 10
+            obj.rotation_z += delta_time * 5
+            if objects_collide(obj, self.camera_obj):
+                print(True)
         
         # Update title
         pos = self.camera.position
@@ -100,7 +114,7 @@ class FPSCameraExample(Window3D):
         self.pitch = max(-1.5, min(1.5, self.pitch))
         
         # Calculate new look direction
-        look_x = math.cos(self.pitch) * math.sin(self.yaw)
+        look_x = -math.cos(self.pitch) * math.sin(self.yaw)
         look_y = math.sin(self.pitch)
         look_z = -math.cos(self.pitch) * math.cos(self.yaw)
         
@@ -119,6 +133,10 @@ class FPSCameraExample(Window3D):
             pygame.event.set_grab(False)
             self.close()
 
+    # def on_draw(self):
+    #     for obj in self.objects:
+    #         obj.draw_collider(self, color=(0, 1, 0))
+
 
 if __name__ == "__main__":
     print("=== Engine3D FPS Camera Example ===")
@@ -131,4 +149,4 @@ if __name__ == "__main__":
     print()
     
     game = FPSCameraExample(800, 600, "Engine3D - FPS Camera")
-    game.run()
+    game.run(200)

@@ -1,0 +1,169 @@
+"""
+Example: First-person camera controls
+Demonstrates FPS-style camera movement with mouse look.
+"""
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+import math
+
+from src.engine3d import Window3D, Keys, Color
+from src.engine3d.object3d import create_cube, create_plane
+from src.physics.collision import objects_collide
+
+
+class FPSCameraExample(Window3D):
+    """First-person camera example."""
+    
+    def setup(self):
+        # Create a floor
+        floor = self.add_object(create_plane(50, 50, color=Color.DARK_GRAY))
+        floor.position = (0, 0, 0)
+        
+        # Create some objects to look at
+        # for x in range(-40, 41, 5):
+        #     for z in range(-40, 41, 5):
+        #         if x == 0 and z == 0:
+        #             continue
+        #         cube = self.add_object(create_cube(1.0, color=Color.random_bright()))
+        #         cube.position = (x, 0.5, z)
+        
+        # Create taller pillars
+        # for i in range(10):
+        #     pillar = self.add_object(create_cube(2.0, color=Color.BLUE))
+        #     angle = i * 3.14159 / 2
+        #     pillar.position = (
+        #         15 * __import__('math').cos(angle),
+        #         2,
+        #         15 * __import__('math').sin(angle)
+        #     )
+        #     pillar.scale_xyz = (2, 4, 2)
+        
+        # Load the stairs model
+        stairs = self.load_object(
+            "example/stairs_modular_right.obj",
+            position=(0, 0, 0),
+            scale=2.0,
+            color=Color.ORANGE
+        )
+        
+        # Camera setup - first person style
+        self.camera_obj = self.add_object(create_cube(1, (0, 0.5, 0), color=Color.WHITE))
+        self.camera.look_at(self.camera_obj.position)
+        self.update_camera_position()
+        
+        # Mouse look settings
+        self.mouse_sensitivity = 0.002
+        self.move_speed = 10.0
+        
+        # Hide mouse cursor and capture it
+        import pygame
+        pygame.mouse.set_visible(False)
+        pygame.event.set_grab(True)
+        
+        self.yaw = 0
+        self.pitch = 0
+
+    def update_camera_position(self):
+        dist = 5
+        height = 4
+
+        pitch = self.camera_obj.rotation_x
+        yaw = self.camera_obj.rotation_y
+
+        # Forward direction from yaw & pitch
+        dir_x = -math.cos(pitch) * math.sin(yaw)
+        dir_y = math.sin(pitch)
+        dir_z = -math.cos(pitch) * math.cos(yaw)
+
+        # Camera goes behind that direction
+        p = self.camera_obj.position
+        cam_x = p[0] - dir_x * dist
+        cam_y = p[1] - dir_y * dist + height
+        cam_z = p[2] - dir_z * dist
+
+        self.camera.position = (cam_x, cam_y, cam_z)
+
+        # 🔴 THIS is the missing part
+        self.camera.look_at(self.camera_obj.position)
+    
+    def on_update(self, delta_time):        
+        # Movement
+        speed = self.move_speed * delta_time
+        yaw = self.camera_obj.rotation_y
+
+        forward_x = -math.sin(yaw)
+        forward_z = -math.cos(yaw)
+        right_x = math.cos(yaw)
+        right_z = -math.sin(yaw)
+
+        move_x = 0.0
+        move_z = 0.0
+
+        if self.is_key_pressed(Keys.W):
+            move_x += forward_x
+            move_z += forward_z
+        if self.is_key_pressed(Keys.S):
+            move_x -= forward_x
+            move_z -= forward_z
+        if self.is_key_pressed(Keys.A):
+            move_x -= right_x
+            move_z -= right_z
+        if self.is_key_pressed(Keys.D):
+            move_x += right_x
+            move_z += right_z
+
+        move_len = math.hypot(move_x, move_z)
+        if move_len > 0:
+            move_x = move_x / move_len * speed
+            move_z = move_z / move_len * speed
+            self.camera_obj.position = (
+                self.camera_obj.position[0] + move_x,
+                self.camera_obj.position[1],
+                self.camera_obj.position[2] + move_z,
+            )
+
+        self.update_camera_position()
+        
+        # Rotate all cubes
+        for obj in self.objects:
+            # if obj.name == "cube":
+            #     obj.rotation_y += delta_time * 20
+            if obj != self.camera_obj and objects_collide(obj, self.camera_obj):
+                print(True)
+        
+        # Update title
+        pos = self.camera.position
+        self.set_caption(f"FPS Camera - Pos: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}) - {self.fps:.0f} FPS")
+    
+    def on_mouse_motion(self, x, y, dx, dy):        
+        # Update yaw and pitch
+        self.yaw -= dx * self.mouse_sensitivity
+        self.pitch -= dy * self.mouse_sensitivity
+        
+        # Clamp pitch
+        self.pitch = max(-1.5, min(1.5, self.pitch))
+        
+        self.camera_obj.rotation = (self.pitch, self.yaw, 0)
+    
+    def on_key_press(self, key, modifiers):
+        if key == Keys.ESCAPE:
+            import pygame
+            pygame.mouse.set_visible(True)
+            pygame.event.set_grab(False)
+            self.close()
+
+
+if __name__ == "__main__":
+    print("=== Engine3D FPS Camera Example ===")
+    print("Controls:")
+    print("  WASD - Move cube on the ground")
+    print("  Mouse - Rotate view around cube")
+    print("  ESC - Exit")
+    print()
+    
+    game = FPSCameraExample(800, 600, "Engine3D - FPS Camera")
+    game.run(200)

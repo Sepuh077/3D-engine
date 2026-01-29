@@ -3,7 +3,11 @@ Example: Basic usage of Engine3D
 Demonstrates loading objects, camera control, and input handling.
 """
 import sys
-sys.path.insert(0, '..')
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src.engine3d import Window3D, Object3D, Keys, Color
 

@@ -8,127 +8,114 @@ from .color import ColorType, Color
 
 if TYPE_CHECKING:
     import moderngl
+    from .window import Window3D
 
 
 class Object3D:
-    """
-    A 3D object in the scene.
-    
-    Load from OBJ file or create primitives. Supports position, rotation, scale.
-    
-    Example:
-        obj = Object3D("model.obj")
-        obj.position = (0, 1, 0)
-        obj.rotation_y = 45  # degrees
-        obj.scale = 2.0
-    """
-    
-    def __init__(self, 
-                 filename: Optional[str] = None,
-                 position: Tuple[float, float, float] = (0, 0, 0),
-                 scale: float = 1.0,
-                 color: Optional[ColorType] = None):
-        """
-        Initialize 3D object.
-        
-        Args:
-            filename: Path to OBJ file (optional, can load later)
-            position: Initial position (x, y, z)
-            scale: Initial scale factor
-            color: Object color (RGB 0-1), random if None
-        """
-        # Transform properties
+    def __init__(
+        self,
+        filename: Optional[str] = None,
+        position=(0, 0, 0),
+        scale: float = 1.0,
+        color: Optional[ColorType] = None,
+        collider_type: str = "cube",
+    ):
+        # ---------------- Transform ----------------
         self._position = np.array(position, dtype=np.float32)
-        self._rotation = np.array([0, 0, 0], dtype=np.float32)  # Euler angles in radians
+        self._rotation = np.zeros(3, dtype=np.float32)  # radians
         self._scale = np.array([scale, scale, scale], dtype=np.float32)
-        
-        # Appearance
-        self._color = np.array(color if color else Color.random_bright(), dtype=np.float32)
+
+        self._transform_dirty = True
+
+        # Cached transforms / colliders
+        self._cached_rotation = None
+        self._cached_model = None
+        self._cached_aabb = None
+        self._cached_obb = None
+        self._cached_sphere = None
+        self._cached_cylinder = None
+
+        # ---------------- Geometry ----------------
+        self._vertices = None
+        self._faces = None
+        self._normals = None
+
+        self._local_min = None
+        self._local_max = None
+        self._local_radius = None
+
+        # ---------------- Misc ----------------
+        self._color = np.array(color if color else (1, 1, 1), dtype=np.float32)
         self._visible = True
-        
-        # Geometry data (loaded from file)
-        self._vertices: Optional[np.ndarray] = None
-        self._normals: Optional[np.ndarray] = None
-        self._faces: Optional[np.ndarray] = None
-        self._center: Optional[np.ndarray] = None
-        
-        # GPU resources (set by renderer)
-        self._vao = None
-        self._vbo = None
-        self._gpu_initialized = False
-        
-        # Metadata
-        self.name = ""
-        self.tag = ""
-        
-        # Load file if provided
+        self._collider_type = collider_type
+
         if filename:
             self.load(filename)
-    
+
+    # ======================================================================
+    # Loading & geometry preprocessing (ONCE)
+    # ======================================================================
+
     def load(self, filename: str):
-        """
-        Load 3D model from OBJ file.
-        
-        Args:
-            filename: Path to OBJ file
-        """
-        vertices = []
-        faces = []
-        
+        vertices, faces = [], []
+
         with open(filename) as f:
             for line in f:
-                line = line.strip()
                 if line.startswith("v "):
-                    parts = line.split()
-                    vertices.append([float(parts[1]), float(parts[2]), float(parts[3])])
+                    vertices.append(list(map(float, line.split()[1:4])))
                 elif line.startswith("f "):
-                    face_indices = []
-                    for part in line.split()[1:]:
-                        # Handle "v", "v/vt", "v/vt/vn", "v//vn" formats
-                        idx = int(part.split("/")[0]) - 1
-                        face_indices.append(idx)
-                    # Triangulate faces with more than 3 vertices
-                    for i in range(1, len(face_indices) - 1):
-                        faces.append([face_indices[0], face_indices[i], face_indices[i + 1]])
-        
+                    idx = [int(p.split("/")[0]) - 1 for p in line.split()[1:]]
+                    for i in range(1, len(idx) - 1):
+                        faces.append([idx[0], idx[i], idx[i + 1]])
+
         self._vertices = np.array(vertices, dtype=np.float32)
         self._faces = np.array(faces, dtype=np.int32)
-        
-        # Center the model
-        self._center = self._vertices.mean(axis=0)
-        self._vertices = self._vertices - self._center
-        
-        # Compute normals
+
+        center = self._vertices.mean(axis=0)
+        self._vertices -= center
+
+        self._local_min = self._vertices.min(axis=0)
+        self._local_max = self._vertices.max(axis=0)
+        self._local_radius = np.linalg.norm(self._vertices, axis=1).max()
+
         self._compute_normals()
-        
-        # Mark GPU as needing update
-        self._gpu_initialized = False
-        
-        # Set name from filename
-        self.name = filename.split("/")[-1].split("\\")[-1].replace(".obj", "")
+
+        self._transform_dirty = True
     
     def _compute_normals(self):
-        """Compute per-vertex normals for lighting."""
         normals = np.zeros_like(self._vertices)
-        
         for face in self._faces:
             v0, v1, v2 = self._vertices[face]
-            edge1 = v1 - v0
-            edge2 = v2 - v0
-            normal = np.cross(edge1, edge2)
-            norm = np.linalg.norm(normal)
-            if norm > 1e-6:
-                normal /= norm
-            normals[face] += normal
-        
-        # Normalize
+            n = np.cross(v1 - v0, v2 - v0)
+            n /= max(np.linalg.norm(n), 1e-6)
+            normals[face] += n
         norms = np.linalg.norm(normals, axis=1, keepdims=True)
-        norms[norms < 1e-6] = 1
-        self._normals = (normals / norms).astype(np.float32)
-    
+        self._normals = normals / np.maximum(norms, 1e-6)
+
+    # ======================================================================
+    # Dirty flag helpers
+    # ======================================================================
+
+    def _mark_dirty(self):
+        self._transform_dirty = True
+
     # =========================================================================
     # Position properties
     # =========================================================================
+    @property
+    def vertices(self):
+        return self._vertices
+
+    @vertices.setter
+    def vertices(self, v):
+        self._vertices = v
+
+        self._local_min = self._vertices.min(axis=0)
+        self._local_max = self._vertices.max(axis=0)
+
+        # Bounding sphere in local space
+        self._local_center = np.zeros(3, dtype=np.float32)
+        self._local_radius = np.linalg.norm(self._vertices, axis=1).max()
     
     @property
     def position(self) -> Tuple[float, float, float]:
@@ -139,6 +126,7 @@ class Object3D:
     def position(self, value: Tuple[float, float, float]):
         """Set position."""
         self._position = np.array(value, dtype=np.float32)
+        self._mark_dirty()
     
     @property
     def x(self) -> float:
@@ -147,6 +135,7 @@ class Object3D:
     @x.setter
     def x(self, value: float):
         self._position[0] = value
+        self._mark_dirty()
     
     @property
     def y(self) -> float:
@@ -155,6 +144,7 @@ class Object3D:
     @y.setter
     def y(self, value: float):
         self._position[1] = value
+        self._mark_dirty()
     
     @property
     def z(self) -> float:
@@ -163,10 +153,12 @@ class Object3D:
     @z.setter
     def z(self, value: float):
         self._position[2] = value
+        self._mark_dirty()
     
     def move(self, dx: float = 0, dy: float = 0, dz: float = 0):
         """Move object by offset."""
         self._position += np.array([dx, dy, dz], dtype=np.float32)
+        self._mark_dirty()
     
     # =========================================================================
     # Rotation properties (in degrees for user convenience)
@@ -181,15 +173,18 @@ class Object3D:
     def rotation(self, value: Tuple[float, float, float]):
         """Set rotation (degrees)."""
         self._rotation = np.radians(value).astype(np.float32)
+        self._mark_dirty()
     
     @property
     def rotation_x(self) -> float:
         """Rotation around X axis in degrees."""
         return float(np.degrees(self._rotation[0]))
     
+    
     @rotation_x.setter
     def rotation_x(self, value: float):
         self._rotation[0] = np.radians(value)
+        self._mark_dirty()
     
     @property
     def rotation_y(self) -> float:
@@ -199,6 +194,7 @@ class Object3D:
     @rotation_y.setter
     def rotation_y(self, value: float):
         self._rotation[1] = np.radians(value)
+        self._mark_dirty()
     
     @property
     def rotation_z(self) -> float:
@@ -208,10 +204,12 @@ class Object3D:
     @rotation_z.setter
     def rotation_z(self, value: float):
         self._rotation[2] = np.radians(value)
+        self._mark_dirty()
     
     def rotate(self, dx: float = 0, dy: float = 0, dz: float = 0):
         """Rotate object by offset (degrees)."""
         self._rotation += np.radians([dx, dy, dz]).astype(np.float32)
+        self._mark_dirty()
     
     # =========================================================================
     # Scale properties
@@ -226,6 +224,7 @@ class Object3D:
     def scale(self, value: float):
         """Set uniform scale."""
         self._scale = np.array([value, value, value], dtype=np.float32)
+        self._mark_dirty()
     
     @property
     def scale_xyz(self) -> Tuple[float, float, float]:
@@ -236,6 +235,23 @@ class Object3D:
     def scale_xyz(self, value: Tuple[float, float, float]):
         """Set non-uniform scale."""
         self._scale = np.array(value, dtype=np.float32)
+        self._mark_dirty()
+
+    # =========================================================================
+    # Collider properties
+    # =========================================================================
+
+    @property
+    def collider_type(self) -> str:
+        """Type of collider: cube (OBB), sphere or cylinder."""
+        return self._collider_type
+
+    @collider_type.setter
+    def collider_type(self, value: str):
+        value = value.lower()
+        if value not in ("cube", "sphere", "cylinder"):
+            raise ValueError("collider_type must be 'cube', 'sphere' or 'cylinder'")
+        self._collider_type = value
     
     # =========================================================================
     # Appearance properties
@@ -274,58 +290,8 @@ class Object3D:
     # =========================================================================
     
     def get_model_matrix(self) -> np.ndarray:
-        """
-        Get the 4x4 model transformation matrix.
-        Order: Scale -> Rotate -> Translate
-        """
-        # Scale matrix
-        sx, sy, sz = self._scale
-        scale = np.array([
-            [sx, 0, 0, 0],
-            [0, sy, 0, 0],
-            [0, 0, sz, 0],
-            [0, 0, 0, 1]
-        ], dtype=np.float32)
-        
-        # Rotation matrices
-        rx, ry, rz = self._rotation
-        
-        cx, sx_r = np.cos(rx), np.sin(rx)
-        rot_x = np.array([
-            [1, 0, 0, 0],
-            [0, cx, -sx_r, 0],
-            [0, sx_r, cx, 0],
-            [0, 0, 0, 1]
-        ], dtype=np.float32)
-        
-        cy, sy_r = np.cos(ry), np.sin(ry)
-        rot_y = np.array([
-            [cy, 0, sy_r, 0],
-            [0, 1, 0, 0],
-            [-sy_r, 0, cy, 0],
-            [0, 0, 0, 1]
-        ], dtype=np.float32)
-        
-        cz, sz_r = np.cos(rz), np.sin(rz)
-        rot_z = np.array([
-            [cz, -sz_r, 0, 0],
-            [sz_r, cz, 0, 0],
-            [0, 0, 1, 0],
-            [0, 0, 0, 1]
-        ], dtype=np.float32)
-        
-        rotation = rot_x @ rot_y @ rot_z
-        
-        # Translation matrix
-        tx, ty, tz = self._position
-        translation = np.array([
-            [1, 0, 0, 0],
-            [0, 1, 0, 0],
-            [0, 0, 1, 0],
-            [tx, ty, tz, 1]
-        ], dtype=np.float32)
-        
-        return scale @ rotation @ translation
+        self._update_cache()
+        return self._cached_model
     
     # =========================================================================
     # GPU methods (called by renderer)
@@ -360,6 +326,126 @@ class Object3D:
             self._vbo.release()
             self._vbo = None
         self._gpu_initialized = False
+
+    def _update_cache(self):
+        if not self._transform_dirty:
+            return
+
+        # ----- Rotation matrix (ONCE) -----
+        cx, cy, cz = np.cos(self._rotation)
+        sx, sy, sz = np.sin(self._rotation)
+
+        Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]], dtype=np.float32)
+        Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]], dtype=np.float32)
+        Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]], dtype=np.float32)
+
+        R = Rx @ Ry @ Rz
+        self._cached_rotation = R
+
+        extents = (self._local_max - self._local_min) * 0.5 * self._scale
+        local_center = (self._local_min + self._local_max) * 0.5
+
+        center_offset = R @ (local_center * self._scale)
+        center = self._position + center_offset
+
+        # ----- OBB -----
+        self._cached_obb = (center, R, extents)
+
+        # ----- Sphere -----
+        radius = self._local_radius * np.max(np.abs(self._scale))
+        self._cached_sphere = (center, float(radius))
+
+        # ----- AABB from OBB (fast way) -----
+        absR = np.abs(R)
+        half = absR @ extents
+        self._cached_aabb = (center - half, center + half)
+
+        # ----- Cylinder -----
+        half_ext = (self._local_max - self._local_min) * 0.5 * np.abs(self._scale)
+
+        cyl_radius = float(np.maximum(half_ext[0], half_ext[2]))
+        half_height = float(half_ext[1])
+
+        self._cached_cylinder = (center, cyl_radius, half_height)
+
+        # ----- Model matrix (row-major, matches view/projection math) -----
+        sx, sy, sz = self._scale
+        tx, ty, tz = self._position
+
+        S = np.array([
+            [sx, 0,  0,  0],
+            [0,  sy, 0,  0],
+            [0,  0,  sz, 0],
+            [0,  0,  0,  1],
+        ], dtype=np.float32)
+
+        R4 = np.eye(4, dtype=np.float32)
+        R4[:3, :3] = R
+
+        T = np.array([
+            [1, 0, 0, 0],
+            [0, 1, 0, 0],
+            [0, 0, 1, 0],
+            [tx, ty, tz, 1],
+        ], dtype=np.float32)
+
+        model = S @ R4 @ T
+
+        self._cached_model = model
+
+        self._transform_dirty = False
+
+
+    def _rotation_matrix(self):
+        cx, cy, cz = np.cos(self._rotation)
+        sx, sy, sz = np.sin(self._rotation)
+
+        Rx = np.array([
+            [1, 0, 0],
+            [0, cx, -sx],
+            [0, sx, cx]
+        ], dtype=np.float32)
+
+        Ry = np.array([
+            [cy, 0, sy],
+            [0, 1, 0],
+            [-sy, 0, cy]
+        ], dtype=np.float32)
+
+        Rz = np.array([
+            [cz, -sz, 0],
+            [sz, cz, 0],
+            [0, 0, 1]
+        ], dtype=np.float32)
+
+        return Rx @ Ry @ Rz
+
+    def world_aabb(self):
+        self._update_cache()
+        return self._cached_aabb
+
+    def world_obb(self):
+        self._update_cache()
+        return self._cached_obb
+
+    def world_sphere(self):
+        self._update_cache()
+        return self._cached_sphere
+
+    def world_cylinder(self):
+        self._update_cache()
+        return self._cached_cylinder
+
+    # def get_model_matrix(self):
+    #     self._update_cache()
+    #     return self._cached_model
+
+    def draw_collider(self, window: 'Window3D', color: Tuple[float, float, float] = (0, 1, 0), line_width: float = 1.0):
+        """
+        Convenience to draw this object's collider via a Window3D.
+        """
+        window.draw_collider(self, color=color, line_width=line_width)
+
     
     def __repr__(self):
         return f"Object3D(name='{self.name}', position={self.position}, scale={self.scale})"
@@ -371,7 +457,8 @@ class Object3D:
 
 def create_cube(size: float = 1.0, 
                 position: Tuple[float, float, float] = (0, 0, 0),
-                color: Optional[ColorType] = None) -> Object3D:
+                color: Optional[ColorType] = None,
+                collider_type: str = "cube") -> Object3D:
     """
     Create a cube primitive.
     
@@ -383,7 +470,7 @@ def create_cube(size: float = 1.0,
     Returns:
         Object3D cube
     """
-    obj = Object3D(position=position, color=color)
+    obj = Object3D(position=position, color=color, collider_type=collider_type)
     
     s = size / 2
     vertices = np.array([
@@ -410,7 +497,7 @@ def create_cube(size: float = 1.0,
         [20, 21, 22], [20, 22, 23], # Left
     ], dtype=np.int32)
     
-    obj._vertices = vertices
+    obj.vertices = vertices
     obj._faces = faces
     obj._center = np.zeros(3, dtype=np.float32)
     obj._compute_normals()
@@ -422,7 +509,8 @@ def create_cube(size: float = 1.0,
 def create_plane(width: float = 10.0, 
                  height: float = 10.0,
                  position: Tuple[float, float, float] = (0, 0, 0),
-                 color: Optional[ColorType] = None) -> Object3D:
+                 color: Optional[ColorType] = None,
+                 collider_type: str = "cube") -> Object3D:
     """
     Create a horizontal plane primitive.
     
@@ -435,7 +523,7 @@ def create_plane(width: float = 10.0,
     Returns:
         Object3D plane
     """
-    obj = Object3D(position=position, color=color)
+    obj = Object3D(position=position, color=color, collider_type=collider_type)
     
     w, h = width / 2, height / 2
     vertices = np.array([
@@ -450,7 +538,7 @@ def create_plane(width: float = 10.0,
         [0, 3, 2],
     ], dtype=np.int32)
     
-    obj._vertices = vertices
+    obj.vertices = vertices
     obj._faces = faces
     obj._center = np.zeros(3, dtype=np.float32)
     obj._compute_normals()

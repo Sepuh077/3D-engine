@@ -3,7 +3,11 @@ Example: Using Views for scene management
 Demonstrates View3D for creating menu, game, and pause screens.
 """
 import sys
-sys.path.insert(0, '..')
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src.engine3d import Window3D, View3D, Object3D, Keys, Color
 from src.engine3d.object3d import create_cube

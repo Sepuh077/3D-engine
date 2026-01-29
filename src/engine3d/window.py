@@ -89,6 +89,28 @@ class Window3D:
         frag_color = vec4(color, 1.0);
     }
     '''
+
+    COLLIDER_VERTEX_SHADER = '''
+    #version 330 core
+
+    in vec3 in_position;
+    uniform mat4 mvp;
+
+    void main() {
+        gl_Position = mvp * vec4(in_position, 1.0);
+    }
+    '''
+
+    COLLIDER_FRAGMENT_SHADER = '''
+    #version 330 core
+
+    uniform vec3 color;
+    out vec4 frag_color;
+
+    void main() {
+        frag_color = vec4(color, 1.0);
+    }
+    '''
     
     def __init__(self, 
                  width: int = 800, 
@@ -136,6 +158,10 @@ class Window3D:
             vertex_shader=self.VERTEX_SHADER,
             fragment_shader=self.FRAGMENT_SHADER,
         )
+        self._collider_program = self._ctx.program(
+            vertex_shader=self.COLLIDER_VERTEX_SHADER,
+            fragment_shader=self.COLLIDER_FRAGMENT_SHADER,
+        )
         
         # Scene elements
         self.objects: List[Object3D] = []
@@ -158,6 +184,11 @@ class Window3D:
         
         # Setup done flag
         self._setup_done = False
+
+        self._cube_vao = self._create_unit_cube_wire()
+        self._sphere_vao = self._create_unit_sphere_wire(24)
+        self._cylinder_vao = self._create_unit_cylinder_wire(24)
+
     
     # =========================================================================
     # Object management
@@ -350,6 +381,159 @@ class Window3D:
         """Called when the window is resized."""
         pass
     
+    # =========================================================================
+    # Collider debug drawing
+    # =========================================================================
+    def _create_unit_cube_wire(self):
+        v = np.array([
+            [-1,-1,-1],[ 1,-1,-1],
+            [ 1,-1,-1],[ 1, 1,-1],
+            [ 1, 1,-1],[-1, 1,-1],
+            [-1, 1,-1],[-1,-1,-1],
+
+            [-1,-1, 1],[ 1,-1, 1],
+            [ 1,-1, 1],[ 1, 1, 1],
+            [ 1, 1, 1],[-1, 1, 1],
+            [-1, 1, 1],[-1,-1, 1],
+
+            [-1,-1,-1],[-1,-1, 1],
+            [ 1,-1,-1],[ 1,-1, 1],
+            [ 1, 1,-1],[ 1, 1, 1],
+            [-1, 1,-1],[-1, 1, 1],
+        ], dtype=np.float32)
+
+        vbo = self._ctx.buffer(v.tobytes())
+        return self._ctx.vertex_array(
+            self._collider_program,
+            [(vbo, '3f', 'in_position')]
+        )
+
+    def _create_unit_sphere_wire(self, segments):
+        verts = []
+        angles = np.linspace(0, 2*np.pi, segments, endpoint=False)
+
+        def ring(plane):
+            nonlocal verts
+            for i, a1 in enumerate(angles):
+                a2 = angles[(i+1) % len(angles)]
+                if plane == "xy":
+                    p1 = (np.cos(a1), np.sin(a1), 0)
+                    p2 = (np.cos(a2), np.sin(a2), 0)
+                elif plane == "xz":
+                    p1 = (np.cos(a1), 0, np.sin(a1))
+                    p2 = (np.cos(a2), 0, np.sin(a2))
+                else:  # yz
+                    p1 = (0, np.cos(a1), np.sin(a1))
+                    p2 = (0, np.cos(a2), np.sin(a2))
+                verts += [p1, p2]
+
+        ring("xy")
+        ring("xz")
+        ring("yz")
+
+        v = np.array(verts, dtype=np.float32)
+        vbo = self._ctx.buffer(v.tobytes())
+        return self._ctx.vertex_array(
+            self._collider_program,
+            [(vbo, '3f', 'in_position')]
+        )
+
+    def _create_unit_cylinder_wire(self, segments):
+        verts = []
+        angles = np.linspace(0, 2*np.pi, segments, endpoint=False)
+
+        for i, a1 in enumerate(angles):
+            a2 = angles[(i+1) % len(angles)]
+
+            x1, z1 = np.cos(a1), np.sin(a1)
+            x2, z2 = np.cos(a2), np.sin(a2)
+
+            # top ring (y=1)
+            verts += [(x1,1,z1),(x2,1,z2)]
+            # bottom ring (y=-1)
+            verts += [(x1,-1,z1),(x2,-1,z2)]
+            # vertical
+            verts += [(x1,-1,z1),(x1,1,z1)]
+
+        v = np.array(verts, dtype=np.float32)
+        vbo = self._ctx.buffer(v.tobytes())
+        return self._ctx.vertex_array(
+            self._collider_program,
+            [(vbo, '3f', 'in_position')]
+        )
+
+    def draw_collider(self, obj: Object3D, color=(0, 1, 0), line_width=1.0):
+        camera = self._current_view.camera if self._current_view else self.camera
+        view = camera.get_view_matrix()
+        proj = camera.get_projection_matrix(self.aspect)
+
+        self._ctx.line_width = line_width
+        self._collider_program['color'].value = tuple(color)
+
+        t = obj.collider_type
+
+        if t == "cube":
+            center, axes, extents = obj.world_obb()
+
+            S = np.array([
+                [extents[0], 0, 0, 0],
+                [0, extents[1], 0, 0],
+                [0, 0, extents[2], 0],
+                [0, 0, 0, 1],
+            ], dtype=np.float32)
+
+            R4 = np.eye(4, dtype=np.float32)
+            R4[:3, :3] = axes
+
+            T = np.array([
+                [1, 0, 0, 0],
+                [0, 1, 0, 0],
+                [0, 0, 1, 0],
+                [center[0], center[1], center[2], 1],
+            ], dtype=np.float32)
+
+            model = S @ R4 @ T
+
+            vao = self._cube_vao
+
+        elif t == "sphere":
+            center, radius = obj.world_sphere()
+
+            model = np.eye(4, dtype=np.float32)
+            model[:3, :3] *= radius
+            model[3, :3] = center
+
+            vao = self._sphere_vao
+
+        elif t == "cylinder":
+            center, radius, half_h = obj.world_cylinder()
+            _, axes, _ = obj.world_obb()
+
+            S = np.array([
+                [radius, 0, 0, 0],
+                [0, half_h, 0, 0],
+                [0, 0, radius, 0],
+                [0, 0, 0, 1],
+            ], dtype=np.float32)
+
+            R4 = np.eye(4, dtype=np.float32)
+            R4[:3, :3] = axes
+
+            T = np.array([
+                [1, 0, 0, 0],
+                [0, 1, 0, 0],
+                [0, 0, 1, 0],
+                [center[0], center[1], center[2], 1],
+            ], dtype=np.float32)
+
+            model = S @ R4 @ T
+
+            vao = self._cylinder_vao
+
+        mvp = model @ view @ proj
+        self._collider_program['mvp'].write(mvp.tobytes())
+        vao.render(moderngl.LINES)
+
     # =========================================================================
     # Rendering
     # =========================================================================
