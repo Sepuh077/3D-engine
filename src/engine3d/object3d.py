@@ -1,9 +1,11 @@
 """
 Object3D - 3D object that can be loaded, positioned, rotated, and scaled.
 """
+import hashlib
 import numpy as np
 from typing import Tuple, Optional, List, TYPE_CHECKING
 
+from src.physics import ColliderType
 from .color import ColorType, Color
 
 if TYPE_CHECKING:
@@ -18,7 +20,7 @@ class Object3D:
         position=(0, 0, 0),
         scale: float = 1.0,
         color: Optional[ColorType] = None,
-        collider_type: str = "cube",
+        collider_type: str = ColliderType.CUBE,
     ):
         # ---------------- Transform ----------------
         self._position = np.array(position, dtype=np.float32)
@@ -48,6 +50,17 @@ class Object3D:
         self._color = np.array(color if color else (1, 1, 1), dtype=np.float32)
         self._visible = True
         self._collider_type = collider_type
+        self._static = False
+        self.draw_bounding_box = False
+
+        # GPU handles (initialized later)
+        self._vbo = None
+        self._vao = None
+        self._gpu_initialized = False
+
+        # Mesh identity for batching/instancing
+        self._mesh_key = None
+        self._mesh = None
 
         if filename:
             self.load(filename)
@@ -80,6 +93,7 @@ class Object3D:
 
         self._compute_normals()
 
+        self._mesh_key = ("obj", filename)
         self._transform_dirty = True
     
     def _compute_normals(self):
@@ -116,6 +130,7 @@ class Object3D:
         # Bounding sphere in local space
         self._local_center = np.zeros(3, dtype=np.float32)
         self._local_radius = np.linalg.norm(self._vertices, axis=1).max()
+        self._mesh_key = None
     
     @property
     def position(self) -> Tuple[float, float, float]:
@@ -247,10 +262,7 @@ class Object3D:
         return self._collider_type
 
     @collider_type.setter
-    def collider_type(self, value: str):
-        value = value.lower()
-        if value not in ("cube", "sphere", "cylinder"):
-            raise ValueError("collider_type must be 'cube', 'sphere' or 'cylinder'")
+    def collider_type(self, value: ColliderType):
         self._collider_type = value
     
     # =========================================================================
@@ -276,6 +288,16 @@ class Object3D:
     def visible(self, value: bool):
         """Set visibility."""
         self._visible = value
+
+    @property
+    def static(self) -> bool:
+        """Is object static? Static objects can be batched/instanced."""
+        return self._static
+
+    @static.setter
+    def static(self, value: bool):
+        """Set static flag."""
+        self._static = bool(value)
     
     def show(self):
         """Make object visible."""
@@ -284,6 +306,27 @@ class Object3D:
     def hide(self):
         """Make object invisible."""
         self._visible = False
+
+    # =========================================================================
+    # Mesh identity (for caching/instancing)
+    # =========================================================================
+
+    def get_mesh_key(self):
+        """
+        Return a stable mesh key for batching/instancing.
+        Falls back to hashing geometry if no explicit key is set.
+        """
+        if self._mesh_key is not None:
+            return self._mesh_key
+
+        if self._vertices is None or self._faces is None:
+            return None
+
+        h = hashlib.blake2b(digest_size=16)
+        h.update(self._vertices.tobytes())
+        h.update(self._faces.tobytes())
+        self._mesh_key = ("geom", h.hexdigest())
+        return self._mesh_key
     
     # =========================================================================
     # Model matrix
@@ -446,9 +489,22 @@ class Object3D:
         """
         window.draw_collider(self, color=color, line_width=line_width)
 
+    # =========================================================================
+    # Collision helpers
+    # =========================================================================
+
+    def check_collision(self, other: 'Object3D') -> bool:
+        """
+        Check collision with another object based on collider types.
+        """
+        if other is None:
+            return False
+        from src.physics.collision import objects_collide
+        return objects_collide(self, other)
+
     
     def __repr__(self):
-        return f"Object3D(name='{self.name}', position={self.position}, scale={self.scale})"
+        return f"Object3D(name='{hash(self)}', position={self.position}, scale={self.scale})"
 
 
 # =============================================================================
@@ -458,7 +514,7 @@ class Object3D:
 def create_cube(size: float = 1.0, 
                 position: Tuple[float, float, float] = (0, 0, 0),
                 color: Optional[ColorType] = None,
-                collider_type: str = "cube") -> Object3D:
+                collider_type: str = ColliderType.CUBE) -> Object3D:
     """
     Create a cube primitive.
     
@@ -501,7 +557,7 @@ def create_cube(size: float = 1.0,
     obj._faces = faces
     obj._center = np.zeros(3, dtype=np.float32)
     obj._compute_normals()
-    obj.name = "cube"
+    obj._mesh_key = ("primitive", ColliderType.CUBE, float(size))
     
     return obj
 
@@ -510,7 +566,7 @@ def create_plane(width: float = 10.0,
                  height: float = 10.0,
                  position: Tuple[float, float, float] = (0, 0, 0),
                  color: Optional[ColorType] = None,
-                 collider_type: str = "cube") -> Object3D:
+                 collider_type: str = ColliderType.CUBE) -> Object3D:
     """
     Create a horizontal plane primitive.
     
@@ -542,6 +598,5 @@ def create_plane(width: float = 10.0,
     obj._faces = faces
     obj._center = np.zeros(3, dtype=np.float32)
     obj._compute_normals()
-    obj.name = "plane"
     
     return obj

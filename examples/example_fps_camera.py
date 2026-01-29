@@ -5,6 +5,7 @@ Demonstrates FPS-style camera movement with mouse look.
 import sys
 from pathlib import Path
 import math
+import random
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -15,6 +16,7 @@ import random
 from src.engine3d import Window3D, Keys, Color
 from src.engine3d.object3d import create_cube, create_plane
 from src.physics.collision import objects_collide
+from src.physics import ColliderType
 
 
 class FPSCameraExample(Window3D):
@@ -24,17 +26,20 @@ class FPSCameraExample(Window3D):
         # Create a floor
         floor = self.add_object(create_plane(50, 50, color=Color.DARK_GRAY))
         floor.position = (0, 0, 0)
+        # floor.static = True
+        values = ColliderType.all()
         
         # Create some objects to look at
-        for x in range(-40, 41, 3):
-            for z in range(-40, 41, 3):
+        for x in range(-40, 41, 4):
+            for z in range(-40, 41, 4):
                 if x == 0 and z == 0:
                     continue
-                cube = self.add_object(create_cube(1.0, color=Color.random_bright()))
+                cube = self.add_object(create_cube(1.0, color=Color.random_bright(), collider_type=random.choice(values)))
+                if random.random() < 0.5:
+                    cube.static = True
                 cube.position = (x, 0.5, z)
         
         # Create taller pillars
-        values = ["cylinder", "cube", "sphere"]
         for i in range(4):
             pillar = self.add_object(create_cube(2.0, color=Color.BLUE, collider_type=random.choice(values)))
             angle = i * math.pi / 2
@@ -91,12 +96,12 @@ class FPSCameraExample(Window3D):
         
         # Rotate all cubes
         for obj in self.objects:
-            # if obj.name == "cube":
-            obj.rotation_y += delta_time * 20
-            obj.rotation_x += delta_time * 10
-            obj.rotation_z += delta_time * 5
+            if not obj.static:
+                obj.rotation_y += delta_time * 20
+                obj.rotation_x += delta_time * 10
+                obj.rotation_z += delta_time * 5
             if objects_collide(obj, self.camera_obj):
-                print(True)
+                print(obj)
         
         # Update title
         pos = self.camera.position
@@ -133,9 +138,9 @@ class FPSCameraExample(Window3D):
             pygame.event.set_grab(False)
             self.close()
 
-    # def on_draw(self):
-    #     for obj in self.objects:
-    #         obj.draw_collider(self, color=(0, 1, 0))
+    def on_draw(self):
+        for obj in self.objects:
+            obj.draw_collider(self, color=(0, 1, 0))
 
 
 if __name__ == "__main__":

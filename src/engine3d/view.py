@@ -78,20 +78,26 @@ class View3D:
         
         # Initialize GPU if window is available
         if self.window and self.window._ctx:
-            obj._init_gpu(self.window._ctx, self.window._program)
+            self.window._ensure_mesh(obj)
         
         return obj
     
     def remove_object(self, obj: Object3D):
         """Remove object from scene."""
         if obj in self.objects:
-            obj._release_gpu()
+            if self.window:
+                self.window._release_mesh(obj)
+            else:
+                obj._release_gpu()
             self.objects.remove(obj)
     
     def clear_objects(self):
         """Remove all objects from scene."""
         for obj in self.objects:
-            obj._release_gpu()
+            if self.window:
+                self.window._release_mesh(obj)
+            else:
+                obj._release_gpu()
         self.objects.clear()
     
     def get_objects_by_name(self, name: str) -> List[Object3D]:

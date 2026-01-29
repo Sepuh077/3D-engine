@@ -2,8 +2,11 @@
 Window3D - Main application window for 3D rendering.
 Similar to arcade.Window but for GPU-accelerated 3D.
 """
+import time
 import pygame
 import numpy as np
+from collections import defaultdict
+from dataclasses import dataclass
 from typing import List, Optional, Tuple, TYPE_CHECKING
 
 from .object3d import Object3D
@@ -11,6 +14,7 @@ from .camera import Camera3D
 from .light import Light3D
 from .color import Color, ColorType
 from .keys import Keys
+from src.physics import ColliderType
 
 try:
     import moderngl
@@ -21,6 +25,28 @@ except ImportError:
 
 if TYPE_CHECKING:
     from .view import View3D
+
+
+@dataclass
+class MeshGPU:
+    key: object
+    vbo: 'moderngl.Buffer'
+    vao: 'moderngl.VertexArray'
+    vertex_count: int
+    ref_count: int = 0
+    instance_vbo: Optional['moderngl.Buffer'] = None
+    instance_capacity: int = 0
+    instanced_vao: Optional['moderngl.VertexArray'] = None
+
+
+@dataclass
+class StaticBatch:
+    vbo: 'moderngl.Buffer'
+    vao: 'moderngl.VertexArray'
+    vertex_count: int
+    color: Tuple[float, float, float]
+    center: np.ndarray
+    radius: float
 
 
 class Window3D:
@@ -60,6 +86,30 @@ class Window3D:
     
     void main() {
         gl_Position = mvp * vec4(in_position, 1.0);
+        frag_normal = mat3(model) * in_normal;
+        frag_position = vec3(model * vec4(in_position, 1.0));
+    }
+    '''
+
+    VERTEX_SHADER_INSTANCED = '''
+    #version 330 core
+
+    in vec3 in_position;
+    in vec3 in_normal;
+    in vec4 in_model_0;
+    in vec4 in_model_1;
+    in vec4 in_model_2;
+    in vec4 in_model_3;
+
+    uniform mat4 view;
+    uniform mat4 projection;
+
+    out vec3 frag_normal;
+    out vec3 frag_position;
+
+    void main() {
+        mat4 model = mat4(in_model_0, in_model_1, in_model_2, in_model_3);
+        gl_Position = projection * view * model * vec4(in_position, 1.0);
         frag_normal = mat3(model) * in_normal;
         frag_position = vec3(model * vec4(in_position, 1.0));
     }
@@ -158,10 +208,39 @@ class Window3D:
             vertex_shader=self.VERTEX_SHADER,
             fragment_shader=self.FRAGMENT_SHADER,
         )
+        self._instanced_program = self._ctx.program(
+            vertex_shader=self.VERTEX_SHADER_INSTANCED,
+            fragment_shader=self.FRAGMENT_SHADER,
+        )
         self._collider_program = self._ctx.program(
             vertex_shader=self.COLLIDER_VERTEX_SHADER,
             fragment_shader=self.COLLIDER_FRAGMENT_SHADER,
         )
+
+        # GPU caches/batches
+        self._mesh_cache = {}
+        self._static_batches: List[StaticBatch] = []
+        self._static_batches_active = False
+
+        # Render options
+        self.enable_instancing = True
+        self.instancing_min = 2
+        self.instancing_auto = True
+        self.instancing_auto_min_objects = 64
+        self.enable_culling = True
+        self.culling_auto = True
+        self.culling_auto_min_objects = 64
+
+        # Simple uniform state cache
+        self._last_base_color = None
+        self._last_instanced_base_color = None
+
+        # Simple profiler (caption-based)
+        self.show_profiler = False
+        self.profiler_interval = 0.25
+        self._profiler_text = ""
+        self._last_profiler_time = 0.0
+        self._caption_base = title
         
         # Scene elements
         self.objects: List[Object3D] = []
@@ -211,7 +290,7 @@ class Window3D:
             obj = Object3D(obj_or_filename, **kwargs)
         
         # Initialize GPU resources
-        obj._init_gpu(self._ctx, self._program)
+        self._ensure_mesh(obj)
         self.objects.append(obj)
         
         return obj
@@ -234,14 +313,224 @@ class Window3D:
     def remove_object(self, obj: Object3D):
         """Remove object from scene."""
         if obj in self.objects:
-            obj._release_gpu()
+            self._release_mesh(obj)
             self.objects.remove(obj)
     
     def clear_objects(self):
         """Remove all objects from scene."""
         for obj in self.objects:
-            obj._release_gpu()
+            self._release_mesh(obj)
         self.objects.clear()
+
+    def move_object(self, obj: Object3D, delta: Tuple[float, float, float],
+                    check_collisions: bool = False, other_objs: Optional[List[Object3D]] = None) -> bool:
+        """
+        Move an object by delta. Optionally check collisions and revert if needed.
+        """
+        old_pos = obj.position
+        obj.move(*delta)
+
+        if check_collisions:
+            targets = other_objs if other_objs is not None else self._active_objects()
+            for other in targets:
+                if other is obj or not other.visible:
+                    continue
+                if obj.check_collision(other):
+                    obj.position = old_pos
+                    return False
+        return True
+
+    def _update_profiler(self, stats: dict):
+        if not self.show_profiler:
+            return
+
+        now = time.perf_counter()
+        if now - self._last_profiler_time < self.profiler_interval:
+            return
+
+        self._last_profiler_time = now
+        self._profiler_text = (
+            f"objs {stats['visible']}/{stats['total']} "
+            f"culled {stats['culled']} "
+            f"inst {stats['instanced_objs']}x{stats['instanced_batches']} "
+            f"single {stats['single_objs']} "
+            f"static {stats['static_batches']} "
+            f"{stats['cpu_ms']:.1f}ms"
+        )
+        self._apply_caption()
+
+    def _active_objects(self) -> List[Object3D]:
+        return self._current_view.objects if self._current_view else self.objects
+
+    def _get_or_create_mesh(self, obj: Object3D) -> Optional[MeshGPU]:
+        key = obj.get_mesh_key()
+        if key is None:
+            if not obj._gpu_initialized:
+                obj._init_gpu(self._ctx, self._program)
+            return None
+
+        mesh = self._mesh_cache.get(key)
+        if mesh is None:
+            if obj._vertices is None or obj._faces is None:
+                raise RuntimeError("Object has no geometry loaded")
+
+            flat_vertices = obj._vertices[obj._faces.flatten()]
+            flat_normals = obj._normals[obj._faces.flatten()]
+            vertex_data = np.hstack([flat_vertices, flat_normals]).astype(np.float32)
+
+            vbo = self._ctx.buffer(vertex_data.tobytes())
+            vao = self._ctx.vertex_array(
+                self._program,
+                [(vbo, '3f 3f', 'in_position', 'in_normal')]
+            )
+
+            mesh = MeshGPU(
+                key=key,
+                vbo=vbo,
+                vao=vao,
+                vertex_count=len(flat_vertices),
+                ref_count=0,
+            )
+            self._mesh_cache[key] = mesh
+
+        return mesh
+
+    def _ensure_mesh(self, obj: Object3D):
+        mesh = self._get_or_create_mesh(obj)
+        if mesh is None:
+            obj._mesh = None
+            obj._gpu_initialized = True
+            return
+
+        if obj._mesh is mesh:
+            return
+
+        if obj._mesh is None and getattr(obj, "_vao", None) is not None:
+            obj._release_gpu()
+
+        if obj._mesh is not None:
+            self._release_mesh(obj)
+
+        mesh.ref_count += 1
+        obj._mesh = mesh
+        obj._gpu_initialized = True
+
+    def _release_mesh(self, obj: Object3D):
+        if obj._mesh is None:
+            obj._release_gpu()
+            return
+
+        mesh = obj._mesh
+        obj._mesh = None
+        obj._gpu_initialized = False
+        mesh.ref_count -= 1
+
+        if mesh.ref_count <= 0:
+            if mesh.instanced_vao:
+                mesh.instanced_vao.release()
+            if mesh.instance_vbo:
+                mesh.instance_vbo.release()
+            mesh.vao.release()
+            mesh.vbo.release()
+            self._mesh_cache.pop(mesh.key, None)
+
+    def clear_static_batches(self):
+        for batch in self._static_batches:
+            batch.vao.release()
+            batch.vbo.release()
+        self._static_batches = []
+        self._static_batches_active = False
+
+    def build_static_batches(self):
+        """
+        Build GPU batches for static objects in the active scene.
+        Call this after creating/moving static objects.
+        """
+        self.clear_static_batches()
+
+        groups = defaultdict(list)
+        for obj in self._active_objects():
+            if not obj.visible or not obj.static:
+                continue
+            key = (obj.get_mesh_key(), tuple(obj._color))
+            groups[key].append(obj)
+
+        for (_, color), objs in groups.items():
+            vertices_list = []
+            normals_list = []
+
+            for obj in objs:
+                if obj._vertices is None or obj._faces is None:
+                    continue
+
+                model = obj.get_model_matrix()
+                flat_vertices = obj._vertices[obj._faces.flatten()]
+                flat_normals = obj._normals[obj._faces.flatten()]
+
+                ones = np.ones((len(flat_vertices), 1), dtype=np.float32)
+                v_h = np.hstack([flat_vertices, ones])
+                v_world = v_h @ model
+
+                m3 = model[:3, :3]
+                try:
+                    normal_mat = np.linalg.inv(m3)
+                except np.linalg.LinAlgError:
+                    normal_mat = np.eye(3, dtype=np.float32)
+                n_world = flat_normals @ normal_mat
+                norms = np.linalg.norm(n_world, axis=1, keepdims=True)
+                n_world = n_world / np.maximum(norms, 1e-6)
+
+                vertices_list.append(v_world[:, :3])
+                normals_list.append(n_world)
+
+            if not vertices_list:
+                continue
+
+            verts = np.vstack(vertices_list)
+            norms = np.vstack(normals_list)
+            vertex_data = np.hstack([verts, norms]).astype(np.float32)
+
+            vbo = self._ctx.buffer(vertex_data.tobytes())
+            vao = self._ctx.vertex_array(
+                self._program,
+                [(vbo, '3f 3f', 'in_position', 'in_normal')]
+            )
+
+            min_v = verts.min(axis=0)
+            max_v = verts.max(axis=0)
+            center = (min_v + max_v) * 0.5
+            radius = float(np.linalg.norm(verts - center, axis=1).max())
+
+            self._static_batches.append(
+                StaticBatch(
+                    vbo=vbo,
+                    vao=vao,
+                    vertex_count=len(verts),
+                    color=color,
+                    center=center,
+                    radius=radius,
+                )
+            )
+
+        self._static_batches_active = bool(self._static_batches)
+
+    def _ensure_instanced_vao(self, mesh: MeshGPU, instance_count: int):
+        if instance_count <= 0:
+            return
+
+        if mesh.instance_capacity < instance_count or mesh.instance_vbo is None:
+            mesh.instance_capacity = max(instance_count, mesh.instance_capacity * 2, 16)
+            mesh.instance_vbo = self._ctx.buffer(reserve=mesh.instance_capacity * 64)
+            if mesh.instanced_vao:
+                mesh.instanced_vao.release()
+            mesh.instanced_vao = self._ctx.vertex_array(
+                self._instanced_program,
+                [
+                    (mesh.vbo, '3f 3f', 'in_position', 'in_normal'),
+                    (mesh.instance_vbo, '4f 4f 4f 4f /i',
+                     'in_model_0', 'in_model_1', 'in_model_2', 'in_model_3'),
+                ]
+            )
     
     # =========================================================================
     # View management
@@ -259,6 +548,10 @@ class Window3D:
         # Detach current view
         if self._current_view:
             self._current_view._detach_window()
+
+        # Clear static batches when switching views
+        if self._static_batches_active:
+            self.clear_static_batches()
         
         # Attach new view
         self._current_view = view
@@ -267,7 +560,7 @@ class Window3D:
         # Initialize GPU for view's objects
         for obj in view.objects:
             if not obj._gpu_initialized:
-                obj._init_gpu(self._ctx, self._program)
+                self._ensure_mesh(obj)
         
         view.on_show()
     
@@ -303,6 +596,13 @@ class Window3D:
     def set_caption(self, title: str):
         """Set window title."""
         self.title = title
+        self._caption_base = title
+        self._apply_caption()
+
+    def _apply_caption(self):
+        title = self._caption_base
+        if self.show_profiler and self._profiler_text:
+            title = f"{title} | {self._profiler_text}"
         pygame.display.set_caption(title)
     
     # =========================================================================
@@ -472,7 +772,7 @@ class Window3D:
 
         t = obj.collider_type
 
-        if t == "cube":
+        if t == ColliderType.CUBE:
             center, axes, extents = obj.world_obb()
 
             S = np.array([
@@ -496,7 +796,7 @@ class Window3D:
 
             vao = self._cube_vao
 
-        elif t == "sphere":
+        elif t == ColliderType.SPHERE:
             center, radius = obj.world_sphere()
 
             model = np.eye(4, dtype=np.float32)
@@ -505,7 +805,7 @@ class Window3D:
 
             vao = self._sphere_vao
 
-        elif t == "cylinder":
+        elif t == ColliderType.CYLINDER:
             center, radius, half_h = obj.world_cylinder()
             _, axes, _ = obj.world_obb()
 
@@ -540,6 +840,10 @@ class Window3D:
     
     def _render(self):
         """Render the scene."""
+        profiler_enabled = self.show_profiler
+        if profiler_enabled:
+            t_start = time.perf_counter()
+
         # Clear screen
         r, g, b = self.background_color
         self._ctx.clear(r, g, b)
@@ -557,33 +861,161 @@ class Window3D:
         # Compute view and projection matrices
         view = camera.get_view_matrix()
         projection = camera.get_projection_matrix(self.aspect)
+        vp = view @ projection
+
+        total_objects = len(objects)
+        use_culling = (
+            self.enable_culling and
+            (not self.culling_auto or total_objects >= self.culling_auto_min_objects)
+        )
+        tan_x = tan_y = None
+        if use_culling:
+            tan_x, tan_y = camera.get_frustum_tangents(self.aspect)
         
         # Set light uniforms
-        self._program['light_dir'].value = tuple(light.direction)
-        self._program['light_color'].value = tuple(light.color)
-        self._program['ambient'].value = light.ambient
+        for program in (self._program, self._instanced_program):
+            program['light_dir'].value = tuple(light.direction)
+            program['light_color'].value = tuple(light.color)
+            program['ambient'].value = light.ambient
+
+        # Render static batches (baked geometry)
+        static_batches_drawn = 0
+        if self._static_batches_active and self._static_batches:
+            model_identity = np.eye(4, dtype=np.float32)
+            self._program['model'].write(model_identity.tobytes())
+            self._program['mvp'].write(vp.astype(np.float32).tobytes())
+
+            for batch in self._static_batches:
+                if use_culling:
+                    if not camera.is_sphere_visible_view(
+                        batch.center, batch.radius, view, self.aspect, tan_x, tan_y
+                    ):
+                        continue
+
+                if self._last_base_color != batch.color:
+                    self._program['base_color'].value = batch.color
+                    self._last_base_color = batch.color
+
+                batch.vao.render(moderngl.TRIANGLES, vertices=batch.vertex_count)
+                static_batches_drawn += 1
         
         # Render each object
+        visible_objects = []
+        culled_objects = 0
         for obj in objects:
             if not obj.visible:
                 continue
-            
-            if not obj._gpu_initialized:
-                obj._init_gpu(self._ctx, self._program)
-            
+            if self._static_batches_active and obj.static:
+                continue
+
+            if use_culling:
+                center, radius = obj.world_sphere()
+                if not camera.is_sphere_visible_view(center, radius, view, self.aspect, tan_x, tan_y):
+                    culled_objects += 1
+                    continue
+
+            self._ensure_mesh(obj)
+            visible_objects.append(obj)
+
+        instanced_draws = []
+        singles = []
+
+        use_instancing = (
+            self.enable_instancing and
+            (not self.instancing_auto or len(visible_objects) >= self.instancing_auto_min_objects)
+        )
+
+        if use_instancing:
+            groups = defaultdict(list)
+            for obj in visible_objects:
+                if obj._mesh is None:
+                    singles.append(obj)
+                    continue
+                key = (obj._mesh.key, tuple(obj._color))
+                groups[key].append(obj)
+
+            for (_, color), group in groups.items():
+                if len(group) >= self.instancing_min:
+                    instanced_draws.append((group[0]._mesh, color, group))
+                else:
+                    singles.extend(group)
+        else:
+            singles = visible_objects
+
+        instanced_objects = 0
+        instanced_batches = 0
+        if instanced_draws:
+            self._instanced_program['view'].write(view.astype(np.float32).tobytes())
+            self._instanced_program['projection'].write(projection.astype(np.float32).tobytes())
+
+            for mesh, color, group in instanced_draws:
+                instance_count = len(group)
+                self._ensure_instanced_vao(mesh, instance_count)
+
+                models = np.stack(
+                    [obj.get_model_matrix() for obj in group],
+                    axis=0
+                ).astype(np.float32)
+
+                mesh.instance_vbo.orphan(instance_count * 64)
+                mesh.instance_vbo.write(models.tobytes())
+
+                if self._last_instanced_base_color != color:
+                    self._instanced_program['base_color'].value = color
+                    self._last_instanced_base_color = color
+
+                mesh.instanced_vao.render(
+                    moderngl.TRIANGLES,
+                    vertices=mesh.vertex_count,
+                    instances=instance_count,
+                )
+                instanced_objects += instance_count
+                instanced_batches += 1
+
+        for obj in singles:
             # Get model matrix
             model = obj.get_model_matrix()
-            
-            # Compute MVP
             mvp = model @ view @ projection
-            
-            # Set uniforms
+
             self._program['mvp'].write(mvp.astype(np.float32).tobytes())
             self._program['model'].write(model.astype(np.float32).tobytes())
-            self._program['base_color'].value = tuple(obj._color)
-            
-            # Draw
-            obj._vao.render(moderngl.TRIANGLES)
+
+            color = tuple(obj._color)
+            if self._last_base_color != color:
+                self._program['base_color'].value = color
+                self._last_base_color = color
+
+            if obj._mesh is not None:
+                vao = obj._mesh.vao
+                count = obj._mesh.vertex_count
+            else:
+                vao = obj._vao
+                count = None
+
+            if count is not None:
+                vao.render(moderngl.TRIANGLES, vertices=count)
+            else:
+                vao.render(moderngl.TRIANGLES)
+
+        # Draw debug bounding boxes/colliders
+        for obj in objects:
+            if not obj.visible:
+                continue
+            if getattr(obj, "draw_bounding_box", False):
+                self.draw_collider(obj, color=(1, 1, 1), line_width=1.0)
+
+        if profiler_enabled:
+            cpu_ms = (time.perf_counter() - t_start) * 1000.0
+            self._update_profiler({
+                "total": total_objects,
+                "visible": len(visible_objects),
+                "culled": culled_objects,
+                "instanced_objs": instanced_objects,
+                "instanced_batches": instanced_batches,
+                "single_objs": len(singles),
+                "static_batches": static_batches_drawn,
+                "cpu_ms": cpu_ms,
+            })
         
         # Call on_draw for custom rendering
         if self._current_view:
@@ -678,6 +1110,8 @@ class Window3D:
         if not self._setup_done:
             self.setup()
             self._setup_done = True
+
+        print(self.objects.__len__())
         
         # Main loop
         while self._running:

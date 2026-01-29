@@ -180,6 +180,7 @@ class Object3D:
     # Appearance
     color: tuple              # RGB (0-1)
     visible: bool
+    static: bool             # Static objects can be batched for speed
     
     # Methods
     def load(filename: str)
@@ -187,6 +188,29 @@ class Object3D:
     def rotate(dx, dy, dz)    # Degrees
     def show()
     def hide()
+```
+
+For large scenes, mark objects as `static = True` and call
+`Window3D.build_static_batches()` after setup to merge static geometry.
+
+### Performance helpers
+`Window3D` enables frustum culling and instancing by default. You can tweak:
+
+```python
+window.enable_culling = True
+window.enable_instancing = True
+window.instancing_min = 2  # minimum objects per mesh+color before instancing
+window.instancing_auto = True
+window.instancing_auto_min_objects = 64
+window.culling_auto = True
+window.culling_auto_min_objects = 64
+```
+
+Enable a lightweight profiler (updates the window caption):
+
+```python
+window.show_profiler = True
+window.profiler_interval = 0.25  # seconds
 ```
 
 ### Camera3D

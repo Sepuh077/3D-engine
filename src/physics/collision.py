@@ -1,6 +1,7 @@
 import numpy as np
 
 from src.engine3d import Object3D
+from src.physics import ColliderType
 
 
 def sphere_vs_sphere(a: Object3D, b: Object3D):
@@ -103,31 +104,31 @@ def objects_collide(a: Object3D, b: Object3D):
     if not sphere_vs_sphere(a, b):
         return False
 
-    type_a = getattr(a, "collider_type", "cube")
-    type_b = getattr(b, "collider_type", "cube")
+    type_a = getattr(a, "collider_type", ColliderType.CUBE)
+    type_b = getattr(b, "collider_type", ColliderType.CUBE)
 
-    if type_a == "sphere" and type_b == "sphere":
+    if type_a == ColliderType.SPHERE and type_b == ColliderType.SPHERE:
         return True  # already passed sphere test
 
-    if type_a == "cube" and type_b == "cube":
+    if type_a == ColliderType.CUBE and type_b == ColliderType.CUBE:
         return obb_vs_obb(a, b)
 
-    if type_a == "sphere" and type_b == "cube":
+    if type_a == ColliderType.SPHERE and type_b == ColliderType.CUBE:
         return sphere_vs_obb(a, b)
-    if type_a == "cube" and type_b == "sphere":
+    if type_a == ColliderType.CUBE and type_b == ColliderType.SPHERE:
         return sphere_vs_obb(b, a)
 
-    if type_a == "sphere" and type_b == "cylinder":
+    if type_a == ColliderType.SPHERE and type_b == ColliderType.CYLINDER:
         return sphere_vs_cylinder(a, b)
-    if type_a == "cylinder" and type_b == "sphere":
+    if type_a == ColliderType.CYLINDER and type_b == ColliderType.SPHERE:
         return sphere_vs_cylinder(b, a)
 
-    if type_a == "cylinder" and type_b == "cylinder":
+    if type_a == ColliderType.CYLINDER and type_b == ColliderType.CYLINDER:
         return cylinder_vs_cylinder(a, b)
 
-    if type_a == "cylinder" and type_b == "cube":
+    if type_a == ColliderType.CYLINDER and type_b == ColliderType.CUBE:
         return cylinder_vs_obb(a, b)
-    if type_a == "cube" and type_b == "cylinder":
+    if type_a == ColliderType.CUBE and type_b == ColliderType.CYLINDER:
         return cylinder_vs_obb(b, a)
 
     # Fallback to OBB test for any unknown combination

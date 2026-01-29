@@ -47,6 +47,14 @@ class Camera3D:
         self._orbit_yaw = 0.0
         self._orbit_pitch = 0.0
         self._update_orbit_angles()
+
+        # Frustum cache
+        self._frustum_cache = {
+            "aspect": None,
+            "fov": None,
+            "tan_x": None,
+            "tan_y": None,
+        }
     
     def _update_orbit_angles(self):
         """Calculate orbit angles from current position."""
@@ -188,6 +196,57 @@ class Camera3D:
     def get_projection_matrix(self, aspect: float) -> np.ndarray:
         """Get the projection matrix for rendering."""
         return self._perspective_matrix(self.fov, aspect, self.near, self.far)
+
+    def world_to_view(self, point: np.ndarray) -> np.ndarray:
+        """Transform a world-space point to view space."""
+        p = np.array([point[0], point[1], point[2], 1.0], dtype=np.float32)
+        return p @ self.get_view_matrix()
+
+    def is_sphere_visible(self, center: np.ndarray, radius: float, aspect: float) -> bool:
+        """
+        Quick frustum check for a bounding sphere.
+        Uses the camera's fov/near/far and row-major view transform.
+        """
+        view = self.get_view_matrix()
+        tan_x, tan_y = self.get_frustum_tangents(aspect)
+        return self.is_sphere_visible_view(center, radius, view, aspect, tan_x, tan_y)
+
+    def get_frustum_tangents(self, aspect: float) -> Tuple[float, float]:
+        if (self._frustum_cache["aspect"] != aspect or
+                self._frustum_cache["fov"] != self.fov):
+            tan_y = math.tan(math.radians(self.fov) * 0.5)
+            tan_x = tan_y * aspect
+            self._frustum_cache["aspect"] = aspect
+            self._frustum_cache["fov"] = self.fov
+            self._frustum_cache["tan_x"] = tan_x
+            self._frustum_cache["tan_y"] = tan_y
+        return self._frustum_cache["tan_x"], self._frustum_cache["tan_y"]
+
+    def is_sphere_visible_view(self, center: np.ndarray, radius: float,
+                               view: np.ndarray, aspect: float,
+                               tan_x: Optional[float] = None, tan_y: Optional[float] = None) -> bool:
+        if tan_x is None or tan_y is None:
+            tan_x, tan_y = self.get_frustum_tangents(aspect)
+
+        p = np.array([center[0], center[1], center[2], 1.0], dtype=np.float32)
+        c = p @ view
+        z = c[2]
+
+        # In view space, camera looks down -Z.
+        if z > -self.near + radius:
+            return False
+        if z < -self.far - radius:
+            return False
+
+        max_x = -z * tan_x + radius
+        max_y = -z * tan_y + radius
+
+        if abs(c[0]) > max_x:
+            return False
+        if abs(c[1]) > max_y:
+            return False
+
+        return True
     
     @staticmethod
     def _look_at_matrix(eye: np.ndarray, target: np.ndarray, up: np.ndarray) -> np.ndarray:
