@@ -78,6 +78,7 @@ class Window3D:
     in vec3 in_position;
     in vec3 in_normal;
     in vec4 in_color;
+    in vec2 in_uv;
     
     uniform mat4 mvp;
     uniform mat4 model;
@@ -85,12 +86,14 @@ class Window3D:
     out vec3 frag_normal;
     out vec3 frag_position;
     out vec4 frag_v_color;
+    out vec2 frag_uv;
     
     void main() {
         gl_Position = mvp * vec4(in_position, 1.0);
         frag_normal = mat3(model) * in_normal;
         frag_position = vec3(model * vec4(in_position, 1.0));
         frag_v_color = in_color;
+        frag_uv = in_uv;
     }
     '''
 
@@ -100,6 +103,7 @@ class Window3D:
     in vec3 in_position;
     in vec3 in_normal;
     in vec4 in_color;
+    in vec2 in_uv;
     in vec4 in_model_0;
     in vec4 in_model_1;
     in vec4 in_model_2;
@@ -111,6 +115,7 @@ class Window3D:
     out vec3 frag_normal;
     out vec3 frag_position;
     out vec4 frag_v_color;
+    out vec2 frag_uv;
 
     void main() {
         mat4 model = mat4(in_model_0, in_model_1, in_model_2, in_model_3);
@@ -118,6 +123,7 @@ class Window3D:
         frag_normal = mat3(model) * in_normal;
         frag_position = vec3(model * vec4(in_position, 1.0));
         frag_v_color = in_color;
+        frag_uv = in_uv;
     }
     '''
     
@@ -127,11 +133,14 @@ class Window3D:
     in vec3 frag_normal;
     in vec3 frag_position;
     in vec4 frag_v_color;
+    in vec2 frag_uv;
     
     uniform vec3 light_dir;
     uniform vec3 light_color;
     uniform float ambient;
     uniform vec4 base_color;
+    uniform sampler2D tex;
+    uniform bool use_texture;
     
     out vec4 frag_color;
     
@@ -144,6 +153,11 @@ class Window3D:
         
         // Combine vertex color and object tint
         vec4 albedo = frag_v_color * base_color;
+        if (use_texture) {
+            albedo *= texture(tex, frag_uv);
+        }
+        
+        if (albedo.a < 0.001) discard;
         
         vec3 color = albedo.rgb * light_color * (ambient + diffuse * (1.0 - ambient));
         frag_color = vec4(color, albedo.a);
@@ -212,6 +226,7 @@ class Window3D:
         # Create ModernGL context
         self._ctx = moderngl.create_context()
         self._ctx.enable(moderngl.DEPTH_TEST | moderngl.BLEND)
+        self._ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
         
         # Compile shaders
         self._program = self._ctx.program(
@@ -369,17 +384,17 @@ class Window3D:
 
         mesh = self._mesh_cache.get(key)
         if mesh is None:
-            flat_vertices, flat_normals, flat_colors = obj._get_flattened_geometry()
+            flat_vertices, flat_normals, flat_colors, flat_uvs = obj._get_flattened_geometry()
             
             if flat_vertices is None:
                 raise RuntimeError("Object has no geometry loaded")
 
-            vertex_data = np.hstack([flat_vertices, flat_normals, flat_colors]).astype(np.float32)
+            vertex_data = np.hstack([flat_vertices, flat_normals, flat_colors, flat_uvs]).astype(np.float32)
 
             vbo = self._ctx.buffer(vertex_data.tobytes())
             vao = self._ctx.vertex_array(
                 self._program,
-                [(vbo, '3f 3f 4f', 'in_position', 'in_normal', 'in_color')]
+                [(vbo, '3f 3f 4f 2f', 'in_position', 'in_normal', 'in_color', 'in_uv')]
             )
 
             mesh = MeshGPU(
@@ -457,9 +472,10 @@ class Window3D:
             vertices_list = []
             normals_list = []
             colors_list = []
+            uvs_list = []
 
             for obj in objs:
-                flat_vertices, flat_normals, flat_colors = obj._get_flattened_geometry()
+                flat_vertices, flat_normals, flat_colors, flat_uvs = obj._get_flattened_geometry()
                 
                 if flat_vertices is None:
                     continue
@@ -482,6 +498,7 @@ class Window3D:
                 vertices_list.append(v_world[:, :3])
                 normals_list.append(n_world)
                 colors_list.append(flat_colors)
+                uvs_list.append(flat_uvs)
 
             if not vertices_list:
                 continue
@@ -489,13 +506,14 @@ class Window3D:
             verts = np.vstack(vertices_list)
             norms = np.vstack(normals_list)
             cols = np.vstack(colors_list)
+            uvs = np.vstack(uvs_list)
             
-            vertex_data = np.hstack([verts, norms, cols]).astype(np.float32)
+            vertex_data = np.hstack([verts, norms, cols, uvs]).astype(np.float32)
 
             vbo = self._ctx.buffer(vertex_data.tobytes())
             vao = self._ctx.vertex_array(
                 self._program,
-                [(vbo, '3f 3f 4f', 'in_position', 'in_normal', 'in_color')]
+                [(vbo, '3f 3f 4f 2f', 'in_position', 'in_normal', 'in_color', 'in_uv')]
             )
 
             min_v = verts.min(axis=0)
@@ -528,7 +546,7 @@ class Window3D:
             mesh.instanced_vao = self._ctx.vertex_array(
                 self._instanced_program,
                 [
-                    (mesh.vbo, '3f 3f 4f', 'in_position', 'in_normal', 'in_color'),
+                    (mesh.vbo, '3f 3f 4f 2f', 'in_position', 'in_normal', 'in_color', 'in_uv'),
                     (mesh.instance_vbo, '4f 4f 4f 4f /i',
                      'in_model_0', 'in_model_1', 'in_model_2', 'in_model_3'),
                 ]
@@ -866,16 +884,13 @@ class Window3D:
     # =========================================================================
     
     def _render(self):
-        """Render the scene."""
-        profiler_enabled = self.show_profiler
-        if profiler_enabled:
-            t_start = time.perf_counter()
-
-        # Clear screen
+        """Render the scene with vertex colors OR real textures."""
         r, g, b = self.background_color
         self._ctx.clear(r, g, b)
-        
-        # Get camera and light from current view or window
+
+        # ------------------------------------------------------------
+        # Camera / view setup
+        # ------------------------------------------------------------
         if self._current_view:
             camera = self._current_view.camera
             light = self._current_view.light
@@ -884,175 +899,117 @@ class Window3D:
             camera = self.camera
             light = self.light
             objects = self.objects
-        
-        # Compute view and projection matrices
+
         view = camera.get_view_matrix()
         projection = camera.get_projection_matrix(self.aspect)
-        vp = view @ projection
 
-        total_objects = len(objects)
-        use_culling = (
-            self.enable_culling and
-            (not self.culling_auto or total_objects >= self.culling_auto_min_objects)
-        )
-        tan_x = tan_y = None
-        if use_culling:
-            tan_x, tan_y = camera.get_frustum_tangents(self.aspect)
-        
-        # Set light uniforms
+        # ------------------------------------------------------------
+        # Light uniforms
+        # ------------------------------------------------------------
         for program in (self._program, self._instanced_program):
             program['light_dir'].value = tuple(light.direction)
             program['light_color'].value = tuple(light.color)
             program['ambient'].value = light.ambient
 
-        # Render static batches (baked geometry)
-        static_batches_drawn = 0
-        if self._static_batches_active and self._static_batches:
-            model_identity = np.eye(4, dtype=np.float32)
-            self._program['model'].write(model_identity.tobytes())
-            self._program['mvp'].write(vp.astype(np.float32).tobytes())
+        # ------------------------------------------------------------
+        # Visibility + culling + Sorting
+        # ------------------------------------------------------------
+        opaque_objects = []
+        transparent_objects = []
 
-            for batch in self._static_batches:
-                if use_culling:
-                    if not camera.is_sphere_visible_view(
-                        batch.center, batch.radius, view, self.aspect, tan_x, tan_y
-                    ):
-                        continue
-
-                if self._last_base_color != batch.color:
-                    self._program['base_color'].value = batch.color
-                    self._last_base_color = batch.color
-
-                batch.vao.render(moderngl.TRIANGLES, vertices=batch.vertex_count)
-                static_batches_drawn += 1
-        
-        # Render each object
-        visible_objects = []
-        culled_objects = 0
         for obj in objects:
             if not obj.visible:
                 continue
-            if self._static_batches_active and obj.static:
-                continue
-
-            if use_culling:
-                center, radius = obj.world_sphere()
-                if not camera.is_sphere_visible_view(center, radius, view, self.aspect, tan_x, tan_y):
-                    culled_objects += 1
-                    continue
-
             self._ensure_mesh(obj)
-            visible_objects.append(obj)
+            
+            # Transparency check
+            is_transparent = False
+            if len(obj._color) == 4 and obj._color[3] < 0.99:
+                is_transparent = True
+            
+            if is_transparent:
+                transparent_objects.append(obj)
+            else:
+                opaque_objects.append(obj)
 
-        instanced_draws = []
-        singles = []
+        # Sort transparent objects back-to-front
+        if transparent_objects:
+            cam_pos = camera.position
+            transparent_objects.sort(key=lambda o: -np.linalg.norm(o.position - cam_pos))
 
-        use_instancing = (
-            self.enable_instancing and
-            (not self.instancing_auto or len(visible_objects) >= self.instancing_auto_min_objects)
-        )
+        # ------------------------------------------------------------
+        # Draw Helper
+        # ------------------------------------------------------------
+        def draw_objects(obj_list):
+            for obj in obj_list:
+                mesh = obj._mesh
+                model = obj.get_model_matrix()
+                mvp = model @ view @ projection
 
-        if use_instancing:
-            groups = defaultdict(list)
-            for obj in visible_objects:
-                if obj._mesh is None:
-                    singles.append(obj)
-                    continue
-                key = (obj._mesh.key, tuple(obj._color))
-                groups[key].append(obj)
+                self._program['mvp'].write(mvp.astype(np.float32).tobytes())
+                self._program['model'].write(model.astype(np.float32).tobytes())
 
-            for (_, color), group in groups.items():
-                if len(group) >= self.instancing_min:
-                    instanced_draws.append((group[0]._mesh, color, group))
-                else:
-                    singles.extend(group)
-        else:
-            singles = visible_objects
+                # ============================================================
+                # TEXTURE PATH (alpha foliage, GLTF, FBX, etc.)
+                # ============================================================
+                use_texture = False
+                if mesh is not None and getattr(mesh, "_uses_texture", False):
+                    # Create GL texture once
+                    if not hasattr(mesh, "_gl_texture"):
+                        tex_img = (mesh._texture_image * 255).astype(np.uint8)
+                        h, w = tex_img.shape[:2]
+                        tex = self._ctx.texture((w, h), 4, tex_img.tobytes())
+                        tex.build_mipmaps()
+                        mesh._gl_texture = tex
 
-        instanced_objects = 0
-        instanced_batches = 0
-        if instanced_draws:
-            self._instanced_program['view'].write(view.astype(np.float32).tobytes())
-            self._instanced_program['projection'].write(projection.astype(np.float32).tobytes())
+                    mesh._gl_texture.use(location=0)
+                    self._program['tex'].value = 0
+                    use_texture = True
 
-            for mesh, color, group in instanced_draws:
-                instance_count = len(group)
-                self._ensure_instanced_vao(mesh, instance_count)
+                self._program['use_texture'].value = use_texture
 
-                models = np.stack(
-                    [obj.get_model_matrix() for obj in group],
-                    axis=0
-                ).astype(np.float32)
-
-                mesh.instance_vbo.orphan(instance_count * 64)
-                mesh.instance_vbo.write(models.tobytes())
-
-                if self._last_instanced_base_color != color:
-                    rgba = color if len(color) == 4 else (*color, 1.0)
-                    self._instanced_program['base_color'].value = rgba
-                    self._last_instanced_base_color = color
-
-                mesh.instanced_vao.render(
-                    moderngl.TRIANGLES,
-                    vertices=mesh.vertex_count,
-                    instances=instance_count,
-                )
-                instanced_objects += instance_count
-                instanced_batches += 1
-
-        for obj in singles:
-            # Get model matrix
-            model = obj.get_model_matrix()
-            mvp = model @ view @ projection
-
-            self._program['mvp'].write(mvp.astype(np.float32).tobytes())
-            self._program['model'].write(model.astype(np.float32).tobytes())
-
-            color = tuple(obj._color)
-            rgba = color if len(color) == 4 else (*color, 1.0)
-            if self._last_base_color != rgba:
+                # ============================================================
+                # VERTEX COLOR / BASE COLOR PATH
+                # ============================================================
+                color = tuple(obj._color)
+                rgba = color if len(color) == 4 else (*color, 1.0)
                 self._program['base_color'].value = rgba
-                self._last_base_color = rgba
 
-            if obj._mesh is not None:
-                vao = obj._mesh.vao
-                count = obj._mesh.vertex_count
-            else:
-                vao = obj._vao
-                count = None
+                if mesh is not None:
+                    vao = mesh.vao
+                    count = mesh.vertex_count
+                else:
+                    vao = obj._vao
+                    count = None
 
-            if count is not None:
-                vao.render(moderngl.TRIANGLES, vertices=count)
-            else:
-                vao.render(moderngl.TRIANGLES)
+                if count:
+                    vao.render(moderngl.TRIANGLES, vertices=count)
+                else:
+                    vao.render(moderngl.TRIANGLES)
 
-        # Draw debug bounding boxes/colliders
-        for obj in objects:
-            if not obj.visible:
-                continue
-            if getattr(obj, "draw_bounding_box", False):
-                self.draw_collider(obj, color=(1, 1, 1), line_width=1.0)
+        # ------------------------------------------------------------
+        # Draw Opaque (Depth Write ON)
+        # ------------------------------------------------------------
+        self._ctx.depth_mask = True
+        draw_objects(opaque_objects)
 
-        if profiler_enabled:
-            cpu_ms = (time.perf_counter() - t_start) * 1000.0
-            self._update_profiler({
-                "total": total_objects,
-                "visible": len(visible_objects),
-                "culled": culled_objects,
-                "instanced_objs": instanced_objects,
-                "instanced_batches": instanced_batches,
-                "single_objs": len(singles),
-                "static_batches": static_batches_drawn,
-                "cpu_ms": cpu_ms,
-            })
-        
-        # Call on_draw for custom rendering
+        # ------------------------------------------------------------
+        # Draw Transparent (Depth Write OFF)
+        # ------------------------------------------------------------
+        if transparent_objects:
+            self._ctx.depth_mask = False
+            draw_objects(transparent_objects)
+            self._ctx.depth_mask = True  # Restore for next frame
+
+        # ------------------------------------------------------------
+        # Custom draw hooks
+        # ------------------------------------------------------------
         if self._current_view:
             self._current_view.on_draw()
         self.on_draw()
-        
-        # Swap buffers
+
         pygame.display.flip()
+
     
     # =========================================================================
     # Event handling

@@ -39,13 +39,11 @@ class CollisionExample(Window3D):
                 (0, 1, 5)
             ]
             cube.position = positions[i]
-            cube.draw_bounding_box = True  # Show bounding boxes
             self.obstacles.append(cube)
 
         # Create a moving player object
         self.player = self.add_object(create_cube(1.0, color=Color.BLUE))
         self.player.position = (0, 0.5, 0)
-        self.player.draw_bounding_box = True
         self.player.impassable_objects.extend(self.obstacles)
         self.player.impassable_objects.append(floor)
 
@@ -54,7 +52,6 @@ class CollisionExample(Window3D):
         for i in range(2):
             enemy = self.add_object(create_cube(1.5, color=Color.RED))
             enemy.position = (-3 + i * 6, 0.75, -3 + i * 6)
-            enemy.draw_bounding_box = True
             enemy.speed = 2.0 + i * 0.5  # Slower movement for visibility
             self.enemies.append(enemy)
 
@@ -131,11 +128,15 @@ class CollisionExample(Window3D):
         elif key == Keys.SPACE:
             # Toggle bounding boxes
             self.show_bounding_boxes = not self.show_bounding_boxes
-            for obj in self.objects:
-                obj.draw_bounding_box = self.show_bounding_boxes
         elif key == Keys.R:
             # Reset player position
             self.player.position = (0, 0.5, 0)
+
+    def on_draw(self):
+        if self.show_bounding_boxes:
+            for obj in self.objects:
+                obj.draw_collider(self, Color.WHITE)
+        return super().on_draw()
 
 
 if __name__ == "__main__":

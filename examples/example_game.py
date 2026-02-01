@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 
 from src.engine3d import Window3D, Keys, Color
 from src.engine3d.object3d import create_cube, create_plane
+from src.physics import ColliderType
 
 
 class FPSCameraExample(Window3D):
@@ -44,8 +45,10 @@ class FPSCameraExample(Window3D):
         # Load the stairs model
         stairs = self.load_object(
             r"D:\workspace\3d-game-engine\assets\glTF\Bush_Common_Flowers.gltf",
-            position=(0, 0, 0),
+            position=(0, 2, 0),
             scale=2.0,
+            color=[0, 0, 0, 0.5],
+            collider_type=ColliderType.CYLINDER
         )
         
         # Camera setup - first person style
@@ -153,6 +156,11 @@ class FPSCameraExample(Window3D):
             pygame.mouse.set_visible(True)
             pygame.event.set_grab(False)
             self.close()
+
+    def on_draw(self):
+        super().on_draw()
+        for obj in self.objects:
+            obj.draw_collider(self, Color.RED)
 
 
 if __name__ == "__main__":

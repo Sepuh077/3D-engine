@@ -50,7 +50,6 @@ class Object3D:
         self._color = np.array(color if color else (1, 1, 1), dtype=np.float32)
         self._visible = True
         self._static = False
-        self.draw_bounding_box = False
         self.name = "Object3D"
         self.tag = None
         # List of objects that this object cannot pass through
@@ -543,11 +542,11 @@ class Object3D:
 
     def _get_flattened_geometry(self):
         """
-        Returns (vertices, normals, colors) flattened for drawing.
+        Returns (vertices, normals, colors, uvs) flattened for drawing.
         Colors are (N, 4) float32.
         """
         if self._vertices is None or self._faces is None:
-            return None, None, None
+            return None, None, None, None
 
         flat_vertices = self._vertices[self._faces.flatten()]
         flat_normals = self._normals[self._faces.flatten()]
@@ -558,8 +557,20 @@ class Object3D:
         else:
             # Default white
             flat_colors = np.ones((len(flat_vertices), 4), dtype=np.float32)
+
+        # Handle UVs
+        if hasattr(self, "_uv") and self._uv is not None:
+            # UVs might be per vertex or per face corner
+            if len(self._uv) == len(self._vertices):
+                flat_uvs = self._uv[self._faces.flatten()]
+            elif len(self._uv) == len(self._faces) * 3:
+                flat_uvs = self._uv
+            else:
+                flat_uvs = np.zeros((len(flat_vertices), 2), dtype=np.float32)
+        else:
+            flat_uvs = np.zeros((len(flat_vertices), 2), dtype=np.float32)
             
-        return flat_vertices, flat_normals, flat_colors
+        return flat_vertices, flat_normals, flat_colors, flat_uvs
 
     # =========================================================================
     # GPU methods (called by renderer)
@@ -567,19 +578,19 @@ class Object3D:
     
     def _init_gpu(self, ctx: 'moderngl.Context', program: 'moderngl.Program'):
         """Initialize GPU resources. Called by renderer."""
-        flat_vertices, flat_normals, flat_colors = self._get_flattened_geometry()
+        flat_vertices, flat_normals, flat_colors, flat_uvs = self._get_flattened_geometry()
         
         if flat_vertices is None:
              raise RuntimeError("Object has no geometry loaded")
         
         # Interleave data
-        vertex_data = np.hstack([flat_vertices, flat_normals, flat_colors]).astype(np.float32)
+        vertex_data = np.hstack([flat_vertices, flat_normals, flat_colors, flat_uvs]).astype(np.float32)
         
         # Create GPU buffers
         self._vbo = ctx.buffer(vertex_data.tobytes())
         self._vao = ctx.vertex_array(
             program,
-            [(self._vbo, '3f 3f 4f', 'in_position', 'in_normal', 'in_color')]
+            [(self._vbo, '3f 3f 4f 2f', 'in_position', 'in_normal', 'in_color', 'in_uv')]
         )
         self._gpu_initialized = True
     
