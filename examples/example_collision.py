@@ -30,27 +30,30 @@ class CollisionExample(Window3D):
         floor.static = True
 
         self.obstacles = []
+        # 2 cube obstacles, 2 sphere obstacles
+        positions = [
+            (-5, 1, 0),
+            (5, 1, 0),
+            (0, 1, -5),
+            (0, 1, 5)
+        ]
+        collider_types = [ColliderType.CUBE, ColliderType.CUBE, ColliderType.SPHERE, ColliderType.SPHERE]
         for i in range(4):
-            cube = self.add_object(create_cube(2.0, color=Color.GREEN, collider_type=random.choice(ColliderType.all())))
-            positions = [
-                (-5, 1, 0),
-                (5, 1, 0),
-                (0, 1, -5),
-                (0, 1, 5)
-            ]
-            cube.position = positions[i]
-            self.obstacles.append(cube)
+            obs = self.add_object(create_cube(2.0, color=Color.GREEN, collider_type=collider_types[i]))
+            obs.position = positions[i]
+            self.obstacles.append(obs)
 
-        # Create a moving player object
-        self.player = self.add_object(create_cube(1.0, color=Color.BLUE))
+        # Create a moving player object (sphere collider for testing sphere-sphere)
+        self.player = self.add_object(create_cube(1.0, color=Color.BLUE, collider_type=ColliderType.SPHERE))
         self.player.position = (0, 0.5, 0)
         self.player.impassable_objects.extend(self.obstacles)
         self.player.impassable_objects.append(floor)
 
-        # Create some moving enemies
+        # Create some moving enemies (use stairs OBJ for reliability; GLTF needs .bin)
         self.enemies = []
+        obj_path = r"D:\workspace\3d-game-engine\assets\glTF\Bush_Common_Flowers.gltf"
         for i in range(2):
-            enemy = self.add_object(create_cube(1.5, color=Color.RED))
+            enemy = self.add_object(obj_path, scale=1, color=Color.RED)  # color tints if no vertex colors
             enemy.position = (-3 + i * 6, 0.75, -3 + i * 6)
             enemy.speed = 2.0 + i * 0.5  # Slower movement for visibility
             self.enemies.append(enemy)
@@ -149,9 +152,9 @@ if __name__ == "__main__":
     print()
     print("IMPORTANT: Click on the window to focus it, then use keyboard controls.")
     print()
-    print("Green cubes: Static obstacles")
-    print("Red/Yellow cubes: Moving enemies (yellow when colliding with player)")
-    print("Blue cube: Player - moves with WASD (cannot pass through green obstacles)")
+    print("Green: Static obstacles (2 cubes + 2 spheres)")
+    print("Red/Yellow stairs: Moving enemies (yellow when colliding with player)")
+    print("Blue: Player (sphere collider) - moves with WASD (cannot pass through obstacles)")
     print("White lines: Bounding boxes (toggle with SPACE)")
     print()
 

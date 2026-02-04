@@ -47,7 +47,7 @@ class FPSCameraExample(Window3D):
             r"D:\workspace\3d-game-engine\assets\glTF\Bush_Common_Flowers.gltf",
             position=(0, 2, 0),
             scale=2.0,
-            color=[0, 0, 0, 0.5],
+            # color=[0, 0, 0, 0.5],
             collider_type=ColliderType.CYLINDER
         )
         

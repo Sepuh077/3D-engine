@@ -949,20 +949,18 @@ class Window3D:
                 self._program['mvp'].write(mvp.astype(np.float32).tobytes())
                 self._program['model'].write(model.astype(np.float32).tobytes())
 
-                # ============================================================
-                # TEXTURE PATH (alpha foliage, GLTF, FBX, etc.)
-                # ============================================================
+                # Texture path for GLTF etc (check on obj)
                 use_texture = False
-                if mesh is not None and getattr(mesh, "_uses_texture", False):
+                if getattr(obj, "_uses_texture", False):
                     # Create GL texture once
-                    if not hasattr(mesh, "_gl_texture"):
-                        tex_img = (mesh._texture_image * 255).astype(np.uint8)
+                    if not hasattr(obj, "_gl_texture"):
+                        tex_img = (obj._texture_image * 255).astype(np.uint8)
                         h, w = tex_img.shape[:2]
                         tex = self._ctx.texture((w, h), 4, tex_img.tobytes())
                         tex.build_mipmaps()
-                        mesh._gl_texture = tex
+                        obj._gl_texture = tex
 
-                    mesh._gl_texture.use(location=0)
+                    obj._gl_texture.use(location=0)
                     self._program['tex'].value = 0
                     use_texture = True
 

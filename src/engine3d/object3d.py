@@ -1,6 +1,7 @@
 "Object3D - 3D object that can be loaded, positioned, rotated, and scaled."
 import hashlib
 import numpy as np
+import trimesh
 from typing import Tuple, Optional, List, TYPE_CHECKING
 
 from src.physics import ColliderType
@@ -37,17 +38,27 @@ class Object3D:
         self.collider = Collider(collider_type)
 
         # ---------------- Geometry ----------------
-        self._vertices = None
-        self._faces = None
-        self._normals = None
-        self._vertex_colors = None  # (N, 4) float32 0-1
+        # Use trimesh for vertices, faces, normals, colors, UVs
+        self.mesh: Optional[trimesh.Trimesh] = None
 
         self._local_min = None
         self._local_max = None
         self._local_radius = None
 
+        # Texture support (for GLTF etc)
+        self._uses_texture = False
+        self._texture_image = None
+        self._uv = None
+
         # ---------------- Misc ----------------
-        self._color = np.array(color if color else (1, 1, 1), dtype=np.float32)
+        # Normalize color (support 0-1 or 0-255 tuples)
+        c = color if color is not None else (1, 1, 1)
+        c = np.array(c, dtype=np.float32)
+        if c.max() > 1.0:
+            c /= 255.0
+        if len(c) == 3:
+            c = np.append(c, 1.0)
+        self._color = c
         self._visible = True
         self._static = False
         self.name = "Object3D"
@@ -72,69 +83,43 @@ class Object3D:
     # ======================================================================
 
     def load(self, filename: str):
-        # 1. Load geometry based on file extension
-        if filename.lower().endswith('.obj'):
-            self._load_obj_internal(filename)
-        else:
-            self._load_with_trimesh(filename)
-
-        # 2. Post-processing
+        # Load with trimesh for full support including colors
+        self._load_with_trimesh(filename)
+        # Post-processing
         self._post_process_geometry(filename)
 
     def _post_process_geometry(self, geometry_name: str):
-        """
-        Centering, bounds calculation, normal computation, and marking as dirty.
-        Should be called after setting _vertices and _faces.
-        """
-        if self._vertices is not None and len(self._vertices) > 0:
-            center = self._vertices.mean(axis=0)
-            self._vertices -= center
+        if self.mesh is not None and len(self.mesh.vertices) > 0:
+            # Center geometry
+            center = self.mesh.vertices.mean(axis=0)
+            self.mesh.apply_translation(-center)
 
-            self._local_min = self._vertices.min(axis=0)
-            self._local_max = self._vertices.max(axis=0)
-            self._local_radius = np.linalg.norm(self._vertices, axis=1).max()
+            self._local_min = self.mesh.vertices.min(axis=0)
+            self._local_max = self.mesh.vertices.max(axis=0)
+            self._local_radius = np.linalg.norm(self.mesh.vertices, axis=1).max()
 
-            self._compute_normals()
+            # Ensure normals (trimesh computes lazily on .vertex_normals access)
+            _ = self.mesh.vertex_normals
             self._mesh_key = ("geom", geometry_name)
             self._transform_dirty = True
 
-    def _load_obj_internal(self, filename: str):
-        vertices, faces = [], []
-        with open(filename) as f:
-            for line in f:
-                if line.startswith("v "):
-                    vertices.append(list(map(float, line.split()[1:4])))
-                elif line.startswith("f "):
-                    idx = [int(p.split("/")[0]) - 1 for p in line.split()[1:]]
-                    for i in range(1, len(idx) - 1):
-                        faces.append([idx[0], idx[i], idx[i + 1]])
-        
-        self._vertices = np.array(vertices, dtype=np.float32)
-        self._faces = np.array(faces, dtype=np.int32)
-
     def _load_with_trimesh(self, filename: str):
-        try:
-            import trimesh
-            from trimesh.visual.texture import TextureVisuals
-        except ImportError:
-            raise ImportError(
-                "To load non-OBJ files (like FBX/GLTF), install:\n"
-                "pip install trimesh scipy pillow"
-            )
+        # Use trimesh for all formats to properly extract colors/UVs
+        loaded = trimesh.load(filename)
 
-        mesh = trimesh.load_mesh(filename)
-
-        # --- Handle Scene (multiple geometries) ---
-        if isinstance(mesh, trimesh.Scene):
-            geometries = list(mesh.geometry.values())
+        # Handle Scene (multiple geometries)
+        if isinstance(loaded, trimesh.Scene):
+            geometries = list(loaded.geometry.values())
             if not geometries:
                 raise ValueError(f"No geometry found in {filename}")
             mesh = trimesh.util.concatenate(geometries)
+        else:
+            mesh = loaded
 
-        self._vertices = np.array(mesh.vertices, dtype=np.float32)
-        self._faces = np.array(mesh.faces, dtype=np.int32)
+        # Set the trimesh object
+        self.mesh = mesh
 
-        self._vertex_colors = None
+        # Reset texture flags
         self._uses_texture = False
         self._texture_image = None
         self._uv = None
@@ -144,49 +129,48 @@ class Object3D:
 
         visual = mesh.visual
 
-        # ============================================================
-        # CASE 1 — REAL VERTEX COLORS (safe)
-        # ============================================================
+        # Handle vertex colors if present (trimesh provides directly)
         if (
             hasattr(visual, "vertex_colors")
             and visual.vertex_colors is not None
-            and len(visual.vertex_colors) == len(self._vertices)
+            and len(visual.vertex_colors) == len(mesh.vertices)
         ):
             colors = visual.vertex_colors.astype(np.float32)
             if colors.max() > 1.0:
                 colors /= 255.0
             if colors.shape[1] == 3:
                 colors = np.pad(colors, ((0, 0), (0, 1)), constant_values=1.0)
-
-            self._vertex_colors = colors
+            # Store in visual for later use (trimesh compatible)
+            mesh.visual.vertex_colors = colors
             return
 
-        # ============================================================
-        # CASE 2 — TEXTURED MESH
-        # ============================================================
+        # Handle textured mesh (keep original logic for alpha/UV)
         if isinstance(visual, TextureVisuals):
             material = visual.material
-
-            # --- Detect alpha usage (foliage, fences, etc.) ---
             alpha_mode = getattr(material, "alphaMode", "OPAQUE")
             if alpha_mode != "OPAQUE":
-                # DO NOT convert to vertex colors
                 self._uses_texture = True
-                self._texture_image = (
+                # Ensure numpy RGBA array (float 0-1) for moderngl texture upload
+                raw_img = (
                     getattr(material, "baseColorTexture", None)
                     or getattr(material, "image", None)
                 )
+                img_arr = np.asarray(raw_img)
+                if img_arr.ndim == 2:  # grayscale -> RGB
+                    img_arr = np.stack([img_arr] * 3, axis=2)
+                img_arr = img_arr.astype(np.float32) / 255.0
+                if img_arr.shape[2] == 3:  # RGB -> RGBA opaque
+                    img_arr = np.pad(img_arr, ((0, 0), (0, 0), (0, 1)), constant_values=1.0)
+                self._texture_image = img_arr
                 self._uv = visual.uv
                 return
 
-            # --- No alpha → safe to approximate with vertex colors ---
+            # Approximate texture to vertex colors if no alpha
             img = (
                 getattr(material, "baseColorTexture", None)
                 or getattr(material, "image", None)
             )
-
             uv = visual.uv
-
             if img is None or uv is None:
                 return
 
@@ -204,60 +188,47 @@ class Object3D:
                 return c
 
             num_uv = len(uv)
-            num_vertices = len(self._vertices)
-            num_faces = len(self._faces)
+            num_vertices = len(mesh.vertices)
+            num_faces = len(mesh.faces)
 
             v_colors = np.zeros((num_vertices, 4), dtype=np.float32)
             counts = np.zeros(num_vertices, dtype=np.int32)
 
-            # ------------------------------------------------------------
-            # UV PER VERTEX  (Blender FBX / OBJ style)
-            # ------------------------------------------------------------
             if num_uv == num_vertices:
                 for vert_idx in range(num_vertices):
                     u, v = uv[vert_idx]
                     v_colors[vert_idx] = sample_color(u, v)
-
-            # ------------------------------------------------------------
-            # UV PER FACE-CORNER (GLTF / game assets)
-            # ------------------------------------------------------------
             elif num_uv == num_faces * 3:
-                for face_idx, face in enumerate(self._faces):
+                for face_idx, face in enumerate(mesh.faces):
                     for corner in range(3):
                         vert_idx = face[corner]
                         uv_idx = face_idx * 3 + corner
                         u, v = uv[uv_idx]
-
                         v_colors[vert_idx] += sample_color(u, v)
                         counts[vert_idx] += 1
-
                 for i in range(num_vertices):
                     if counts[i] > 0:
                         v_colors[i] /= counts[i]
                     else:
                         v_colors[i] = [1, 1, 1, 1]
-
             else:
-                # Unknown UV layout
                 return
 
-            self._vertex_colors = v_colors
+            # Set as vertex colors in trimesh visual
+            mesh.visual.vertex_colors = v_colors
             return
 
-    def _compute_normals(self):
-        normals = np.zeros_like(self._vertices)
-        for face in self._faces:
-            v0, v1, v2 = self._vertices[face]
-            n = np.cross(v1 - v0, v2 - v0)
-            n /= max(np.linalg.norm(n), 1e-6)
-            normals[face] += n
-        norms = np.linalg.norm(normals, axis=1, keepdims=True)
-        self._normals = normals / np.maximum(norms, 1e-6)
+        # Fallback material color for simple meshes (e.g. OBJ)
+        material = getattr(visual, 'material', None)
+        if material is not None:
+            base = getattr(material, 'baseColor', None) or getattr(material, 'diffuse', [1.0, 1.0, 1.0, 1.0])
+            base = np.array(base, dtype=np.float32)
+            if len(base) == 3:
+                base = np.append(base, 1.0)
+            colors = np.full((len(mesh.vertices), 4), base, dtype=np.float32)
+            mesh.visual.vertex_colors = colors
 
-    # ======================================================================
-    # Dirty flag helpers
-    # ======================================================================
-
+    # Dirty flag helper
     def _mark_dirty(self):
         self._transform_dirty = True
 
@@ -266,18 +237,19 @@ class Object3D:
     # =========================================================================
     @property
     def vertices(self):
-        return self._vertices
+        # Delegate to trimesh
+        return self.mesh.vertices if self.mesh is not None else None
 
     @vertices.setter
     def vertices(self, v):
-        self._vertices = v
-
-        self._local_min = self._vertices.min(axis=0)
-        self._local_max = self._vertices.max(axis=0)
-
-        # Bounding sphere in local space
-        self._local_center = np.zeros(3, dtype=np.float32)
-        self._local_radius = np.linalg.norm(self._vertices, axis=1).max()
+        # Update trimesh mesh
+        if self.mesh is None:
+            self.mesh = trimesh.Trimesh(vertices=v)
+        else:
+            self.mesh.vertices = v
+        self._local_min = self.mesh.vertices.min(axis=0)
+        self._local_max = self.mesh.vertices.max(axis=0)
+        self._local_radius = np.linalg.norm(self.mesh.vertices, axis=1).max()
         self._mesh_key = None
     
     @property
@@ -357,9 +329,15 @@ class Object3D:
                 return True
             
             # 3. Handle Blocker
-            # Revert to start of this iteration
+            # Revert + tiny de-penetrate along normal (fixes sphere-sphere sticking; no jitter)
             self._position = original_pos
             self._mark_dirty()
+            depth = getattr(blocking_manifold, 'depth', 0.0)
+            if depth > 0:
+                # Fixed small push (prevents re-collision in retry without visible jitter)
+                push = 0.001 * blocking_manifold.normal
+                self._position += push
+                self._mark_dirty()
             
             # Calculate slide vector
             normal = blocking_manifold.normal
@@ -368,10 +346,9 @@ class Object3D:
             # Remove velocity component into the wall
             delta = delta - d * normal
             
-            # Check if we have any movement left
-            if np.dot(delta, delta) < 1e-10:
-                return True
-                
+            # Continue with projected delta (even tiny; avoids premature stop on glancing sphere-sphere)
+            # The loop limit prevents infinite if stuck
+
         self._position = original_pos
         self._mark_dirty()
         return True
@@ -477,7 +454,13 @@ class Object3D:
     @color.setter
     def color(self, value: ColorType):
         """Set color."""
-        self._color = np.array(value, dtype=np.float32)
+        # Normalize (support 0-1 or 0-255)
+        c = np.array(value, dtype=np.float32)
+        if c.max() > 1.0:
+            c /= 255.0
+        if len(c) == 3:
+            c = np.append(c, 1.0)
+        self._color = c
     
     @property
     def visible(self) -> bool:
@@ -507,24 +490,17 @@ class Object3D:
         """Make object invisible."""
         self._visible = False
 
-    # =========================================================================
-    # Mesh identity (for caching/instancing)
-    # =========================================================================
-
+    # Mesh identity for caching/instancing
     def get_mesh_key(self):
-        """
-        Return a stable mesh key for batching/instancing.
-        Falls back to hashing geometry if no explicit key is set.
-        """
         if self._mesh_key is not None:
             return self._mesh_key
 
-        if self._vertices is None or self._faces is None:
+        if self.mesh is None:
             return None
 
         h = hashlib.blake2b(digest_size=16)
-        h.update(self._vertices.tobytes())
-        h.update(self._faces.tobytes())
+        h.update(self.mesh.vertices.tobytes())
+        h.update(self.mesh.faces.tobytes())
         self._mesh_key = ("geom", h.hexdigest())
         return self._mesh_key
     
@@ -536,39 +512,49 @@ class Object3D:
         self._update_cache()
         return self._cached_model
     
-    # =========================================================================
-    # GPU Helpers
-    # =========================================================================
-
+    # GPU helper for moderngl rendering
     def _get_flattened_geometry(self):
-        """
-        Returns (vertices, normals, colors, uvs) flattened for drawing.
-        Colors are (N, 4) float32.
-        """
-        if self._vertices is None or self._faces is None:
+        if self.mesh is None:
             return None, None, None, None
 
-        flat_vertices = self._vertices[self._faces.flatten()]
-        flat_normals = self._normals[self._faces.flatten()]
+        # Flatten using trimesh data (ensures correct colors from visual)
+        faces = self.mesh.faces
+        flat_vertices = self.mesh.vertices[faces.flatten()]
+        flat_normals = self.mesh.vertex_normals[faces.flatten()]
         
-        # Handle colors
-        if self._vertex_colors is not None:
-            flat_colors = self._vertex_colors[self._faces.flatten()]
+        # Get colors from trimesh visual (fixed extraction + normalize 0-255->0-1)
+        visual = self.mesh.visual
+        if hasattr(visual, "vertex_colors") and visual.vertex_colors is not None:
+            # Use per-vertex colors, repeat for face corners
+            flat_colors = visual.vertex_colors[faces.flatten()].astype(np.float32)
+            if flat_colors.max() > 1.0:
+                flat_colors /= 255.0
         else:
             # Default white
             flat_colors = np.ones((len(flat_vertices), 4), dtype=np.float32)
-
-        # Handle UVs
-        if hasattr(self, "_uv") and self._uv is not None:
-            # UVs might be per vertex or per face corner
-            if len(self._uv) == len(self._vertices):
-                flat_uvs = self._uv[self._faces.flatten()]
-            elif len(self._uv) == len(self._faces) * 3:
-                flat_uvs = self._uv
+        
+        # UVs from visual
+        if hasattr(visual, "uv") and visual.uv is not None:
+            uv = visual.uv
+            # UV layout: per-vertex or per-face-corner
+            if len(uv) == len(self.mesh.vertices):
+                flat_uvs = uv[faces.flatten()]
+            elif len(uv) == len(faces) * 3:
+                flat_uvs = uv
             else:
                 flat_uvs = np.zeros((len(flat_vertices), 2), dtype=np.float32)
         else:
-            flat_uvs = np.zeros((len(flat_vertices), 2), dtype=np.float32)
+            # Fallback to _uv for compatibility
+            if hasattr(self, "_uv") and self._uv is not None:
+                uv = self._uv
+                if len(uv) == len(self.mesh.vertices):
+                    flat_uvs = uv[faces.flatten()]
+                elif len(uv) == len(faces) * 3:
+                    flat_uvs = uv
+                else:
+                    flat_uvs = np.zeros((len(flat_vertices), 2), dtype=np.float32)
+            else:
+                flat_uvs = np.zeros((len(flat_vertices), 2), dtype=np.float32)
             
         return flat_vertices, flat_normals, flat_colors, flat_uvs
 
@@ -672,9 +658,8 @@ class Object3D:
 
         self._cached_model = model
         
-        # ----- Mesh Data -----
-        # Only needed if type is MESH, but passing it doesn't hurt (references are cheap)
-        mesh_data = (self._vertices, self._faces, model)
+        # Mesh data for collision (uses trimesh)
+        mesh_data = (self.mesh.vertices, self.mesh.faces, model)
         
         self.collider.update(sphere, obb, aabb, cylinder, mesh_data)
 
@@ -781,31 +766,25 @@ def create_cube(size: float = 1.0,
     
     s = size / 2
     vertices = np.array([
-        # Front face
         [-s, -s,  s], [ s, -s,  s], [ s,  s,  s], [-s,  s,  s],
-        # Back face
         [-s, -s, -s], [-s,  s, -s], [ s,  s, -s], [ s, -s, -s],
-        # Top face
         [-s,  s, -s], [-s,  s,  s], [ s,  s,  s], [ s,  s, -s],
-        # Bottom face
         [-s, -s, -s], [ s, -s, -s], [ s, -s,  s], [-s, -s,  s],
-        # Right face
         [ s, -s, -s], [ s,  s, -s], [ s,  s,  s], [ s, -s,  s],
-        # Left face
         [-s, -s, -s], [-s, -s,  s], [-s,  s,  s], [-s,  s, -s],
     ], dtype=np.float32)
     
     faces = np.array([
-        [0, 1, 2], [0, 2, 3],       # Front
-        [4, 5, 6], [4, 6, 7],       # Back
-        [8, 9, 10], [8, 10, 11],    # Top
-        [12, 13, 14], [12, 14, 15], # Bottom
-        [16, 17, 18], [16, 18, 19], # Right
-        [20, 21, 22], [20, 22, 23], # Left
+        [0, 1, 2], [0, 2, 3],
+        [4, 5, 6], [4, 6, 7],
+        [8, 9, 10], [8, 10, 11],
+        [12, 13, 14], [12, 14, 15],
+        [16, 17, 18], [16, 18, 19],
+        [20, 21, 22], [20, 22, 23],
     ], dtype=np.int32)
     
-    obj._vertices = vertices
-    obj._faces = faces
+    # Use trimesh object (default white vertex colors in renderer for tinting)
+    obj.mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
     obj._post_process_geometry(f"primitive_cube_{size}")
     
     return obj
@@ -839,14 +818,12 @@ def create_plane(width: float = 10.0,
     ], dtype=np.float32)
     
     faces = np.array([
-        [0, 2, 1],  # Facing up
+        [0, 2, 1],
         [0, 3, 2],
     ], dtype=np.int32)
 
-    obj._vertices = vertices
-
-    obj._faces = faces
-
+    # Use trimesh object (default white vertex colors in renderer for tinting)
+    obj.mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
     obj._post_process_geometry(f"primitive_plane_{width}_{height}")
 
     return obj
