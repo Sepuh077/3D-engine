@@ -29,6 +29,18 @@ from .light import Light3D
 from .keys import Keys
 from .color import Color
 
+# Arcade-style global 2D drawing (separate module)
+from .drawing import (
+    get_window,
+    draw_text,
+    draw_rectangle,
+    draw_circle,
+    draw_ellipse,
+    draw_polygon,
+    draw_line,
+    draw_image,
+)
+
 __all__ = [
     'Window3D',
     'View3D', 
@@ -37,6 +49,15 @@ __all__ = [
     'Light3D',
     'Keys',
     'Color',
+    # Global 2D drawing (Arcade-style)
+    'get_window',
+    'draw_text',
+    'draw_rectangle',
+    'draw_circle',
+    'draw_ellipse',
+    'draw_polygon',
+    'draw_line',
+    'draw_image',
 ]
 
 __version__ = '0.1.0'

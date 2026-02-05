@@ -2,11 +2,12 @@
 View3D - A scene/view that can be shown in a Window3D.
 Similar to arcade.View.
 """
-from typing import List, Optional, TYPE_CHECKING
+from typing import List, Optional, Tuple, Union, TYPE_CHECKING
 
 from .object3d import Object3D
 from .camera import Camera3D
 from .light import Light3D
+from .color import Color, ColorType
 
 if TYPE_CHECKING:
     from .window import Window3D
@@ -211,3 +212,49 @@ class View3D:
             scroll_x, scroll_y: Scroll amounts
         """
         pass
+
+    # 2D drawing methods (forward to window if attached)
+    # Allows drawing shapes and text in View3D.on_draw()
+    def draw_text(self, text: str, x: int, y: int, color: ColorType = Color.WHITE,
+                  font_size: int = 24, font_name: Optional[str] = None,
+                  anchor_x: str = 'left', anchor_y: str = 'top',
+                  baseline_adjust: bool = True) -> None:
+        """Draw text (y=top of bounding box; delegates to window)."""
+        if self.window:
+            self.window.draw_text(text, x, y, color, font_size, font_name, anchor_x, anchor_y, baseline_adjust)
+    
+    def draw_rectangle(self, x: int, y: int, width: int, height: int,
+                       color: ColorType, border_width: int = 0) -> None:
+        """Draw rectangle (delegates to window)."""
+        if self.window:
+            self.window.draw_rectangle(x, y, width, height, color, border_width)
+    
+    def draw_circle(self, x: int, y: int, radius: int, color: ColorType,
+                    border_width: int = 2, aa: bool = True) -> None:  # thicker + AA default
+        """Draw circle (delegates to window)."""
+        if self.window:
+            self.window.draw_circle(x, y, radius, color, border_width, aa)
+    
+    def draw_ellipse(self, x: int, y: int, width: int, height: int,
+                     color: ColorType, border_width: int = 2, aa: bool = True) -> None:  # thicker + AA default
+        """Draw ellipse (delegates to window)."""
+        if self.window:
+            self.window.draw_ellipse(x, y, width, height, color, border_width, aa)
+    
+    def draw_polygon(self, points: List[Tuple[int, int]], color: ColorType,
+                     border_width: int = 2, aa: bool = True) -> None:  # thicker + AA default
+        """Draw polygon (delegates to window)."""
+        if self.window:
+            self.window.draw_polygon(points, color, border_width, aa)
+    
+    def draw_line(self, start: Tuple[int, int], end: Tuple[int, int],
+                  color: ColorType, width: int = 2, aa: bool = True) -> None:  # thicker + AA default
+        """Draw line (delegates to window)."""
+        if self.window:
+            self.window.draw_line(start, end, color, width, aa)
+    
+    def draw_image(self, image: Union[str, 'pygame.Surface'], x: int, y: int,
+                   scale: float = 1.0, alpha: float = 1.0) -> None:
+        """Draw image (path or Surface; delegates to window)."""
+        if self.window:
+            self.window.draw_image(image, x, y, scale, alpha)

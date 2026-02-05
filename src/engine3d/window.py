@@ -4,10 +4,16 @@ Similar to arcade.Window but for GPU-accelerated 3D.
 """
 import time
 import pygame
+# Optional gfxdraw for anti-aliased 2D outlines (fallback to draw)
+try:
+    from pygame import gfxdraw
+    HAS_GFXDRAW = True
+except ImportError:
+    HAS_GFXDRAW = False
 import numpy as np
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from typing import List, Optional, Tuple, Union, TYPE_CHECKING
 
 from .object3d import Object3D
 from .camera import Camera3D
@@ -185,7 +191,29 @@ class Window3D:
         frag_color = vec4(color, 1.0);
     }
     '''
-    
+
+    # 2D overlay shaders for UI/shapes/text
+    OVERLAY_VERTEX_SHADER = '''
+    #version 330 core
+    in vec2 in_pos;
+    in vec2 in_tex;
+    out vec2 frag_tex;
+    void main() {
+        gl_Position = vec4(in_pos, 0.0, 1.0);
+        frag_tex = in_tex;
+    }
+    '''
+
+    OVERLAY_FRAGMENT_SHADER = '''
+    #version 330 core
+    in vec2 frag_tex;
+    uniform sampler2D tex;
+    out vec4 frag_color;
+    void main() {
+        frag_color = texture(tex, frag_tex);
+    }
+    '''
+
     def __init__(self, 
                  width: int = 800, 
                  height: int = 600, 
@@ -242,6 +270,12 @@ class Window3D:
             fragment_shader=self.COLLIDER_FRAGMENT_SHADER,
         )
 
+        # 2D overlay program for shapes and text
+        self._overlay_program = self._ctx.program(
+            vertex_shader=self.OVERLAY_VERTEX_SHADER,
+            fragment_shader=self.OVERLAY_FRAGMENT_SHADER,
+        )
+
         # GPU caches/batches
         self._mesh_cache = {}
         self._static_batches: List[StaticBatch] = []
@@ -292,6 +326,31 @@ class Window3D:
         self._cube_vao = self._create_unit_cube_wire()
         self._sphere_vao = self._create_unit_sphere_wire(24)
         self._cylinder_vao = self._create_unit_cylinder_wire(24)
+
+        # 2D drawing setup: offscreen surface + OpenGL texture overlay
+        # Supports shapes, text with fonts, drawn in on_draw()
+        self._2d_surface = pygame.Surface((width, height), pygame.SRCALPHA)
+        self._fonts = {}
+        self._image_cache = {}  # path -> loaded surface
+        # Create full-screen quad for 2D overlay
+        quad = np.array([
+            -1.0, -1.0, 0.0, 1.0,  # bottom-left
+             1.0, -1.0, 1.0, 1.0,  # bottom-right
+             1.0,  1.0, 1.0, 0.0,  # top-right
+            -1.0, -1.0, 0.0, 1.0,
+             1.0,  1.0, 1.0, 0.0,
+            -1.0,  1.0, 0.0, 0.0,  # top-left
+        ], dtype=np.float32)
+        self._2d_vbo = self._ctx.buffer(quad.tobytes())
+        self._2d_vao = self._ctx.vertex_array(
+            self._overlay_program,
+            [(self._2d_vbo, '2f 2f', 'in_pos', 'in_tex')]
+        )
+        self._2d_texture = self._ctx.texture((width, height), 4)  # RGBA
+
+        # Register as active window for global draw funcs (Arcade-style)
+        from . import drawing
+        drawing.set_window(self)
 
     
     # =========================================================================
@@ -698,8 +757,162 @@ class Window3D:
         pass
     
     def on_resize(self, width: int, height: int):
-        """Called when the window is resized."""
-        pass
+        """Called when the window is resized. Recreates 2D overlay."""
+        self.width = width
+        self.height = height
+        # Recreate 2D surface and texture
+        self._2d_surface = pygame.Surface((width, height), pygame.SRCALPHA)
+        if hasattr(self, '_2d_texture'):
+            self._2d_texture.release()
+            self._2d_texture = self._ctx.texture((width, height), 4)
+    
+    # =========================================================================
+    # 2D drawing (shapes, text, UI overlay)
+    # =========================================================================
+    
+    def _get_font(self, font_name: Optional[str] = None, font_size: int = 24):
+        """Get or create cached font."""
+        key = (font_name or 'default', font_size)
+        if key not in self._fonts:
+            if font_name and (font_name.lower().endswith(('.ttf', '.otf')) or '/' in font_name or '\\' in font_name):
+                # Load from file path
+                self._fonts[key] = pygame.font.Font(font_name, font_size)
+            else:
+                # System font or default
+                self._fonts[key] = pygame.font.SysFont(font_name, font_size)
+        return self._fonts[key]
+    
+    def draw_text(self, text: str, x: int, y: int, color: ColorType = Color.WHITE,
+                  font_size: int = 24, font_name: Optional[str] = None,
+                  anchor_x: str = 'left', anchor_y: str = 'top',
+                  baseline_adjust: bool = True) -> None:
+        """Draw text at screen position (x,y top of text bounding box by default)."""
+        font = self._get_font(font_name, font_size)
+        # Convert color 0-1 to 0-255
+        if len(color) == 3:
+            rgb = tuple(int(c * 255) for c in color)
+            alpha = 255
+        else:
+            rgb = tuple(int(c * 255) for c in color[:3])
+            alpha = int(color[3] * 255)
+        text_surf = font.render(text, True, rgb)  # antialias=True for quality
+        # Handle alpha by creating alpha surface
+        if alpha < 255:
+            text_surf = text_surf.convert_alpha()
+            # Simple alpha: multiply alpha channel (for uniform alpha)
+            arr = pygame.surfarray.pixels_alpha(text_surf)
+            arr[:] = (arr[:] * (alpha / 255)).astype(np.uint8)
+            del arr  # release
+        # Apply anchors (precise via bounding height)
+        w, h = text_surf.get_size()
+        if anchor_x == 'center':
+            x -= w // 2
+        elif anchor_x == 'right':
+            x -= w
+        if anchor_y == 'center':
+            y -= h // 2
+        elif anchor_y == 'bottom':
+            y -= h
+        # Optional baseline adjust to fix y-shifts across fonts/sizes
+        if baseline_adjust:
+            y -= font.get_ascent() // 6  # empirical top-align consistency
+        self._2d_surface.blit(text_surf, (x, y))
+    
+    def draw_rectangle(self, x: int, y: int, width: int, height: int,
+                       color: ColorType, border_width: int = 0) -> None:
+        """Draw filled or bordered rectangle. border_width=0 for fill."""
+        if len(color) == 3:
+            col = tuple(int(c * 255) for c in color) + (255,)
+        else:
+            col = tuple(int(c * 255) for c in color)
+        rect = pygame.Rect(x, y, width, height)
+        pygame.draw.rect(self._2d_surface, col, rect, border_width)
+    
+    def draw_circle(self, x: int, y: int, radius: int, color: ColorType,
+                    border_width: int = 2, aa: bool = True) -> None:  # thicker + AA default
+        """Draw filled (0) or bordered circle (AA if gfxdraw avail)."""
+        if len(color) == 3:
+            col = tuple(int(c * 255) for c in color) + (255,)
+        else:
+            col = tuple(int(c * 255) for c in color)
+        if border_width > 0 and HAS_GFXDRAW and aa:
+            # Anti-aliased outline
+            gfxdraw.aacircle(self._2d_surface, x, y, radius, col[:3])
+            if border_width > 1:
+                gfxdraw.aacircle(self._2d_surface, x, y, radius - 1, col[:3])  # thicker sim
+        else:
+            pygame.draw.circle(self._2d_surface, col, (x, y), radius, border_width)
+    
+    def draw_ellipse(self, x: int, y: int, width: int, height: int,
+                     color: ColorType, border_width: int = 2, aa: bool = True) -> None:  # thicker + AA default
+        """Draw filled (0) or bordered ellipse/oval (AA if gfxdraw avail)."""
+        if len(color) == 3:
+            col = tuple(int(c * 255) for c in color) + (255,)
+        else:
+            col = tuple(int(c * 255) for c in color)
+        rect = pygame.Rect(x, y, width, height)
+        if border_width > 0 and HAS_GFXDRAW and aa:
+            # Anti-aliased outline (gfxdraw no width, sim with rect adjust)
+            gfxdraw.aaellipse(self._2d_surface, x + width//2, y + height//2, width//2, height//2, col[:3])
+        else:
+            pygame.draw.ellipse(self._2d_surface, col, rect, border_width)
+    
+    def draw_polygon(self, points: List[Tuple[int, int]], color: ColorType,
+                     border_width: int = 2, aa: bool = True) -> None:  # thicker + AA default
+        """Draw filled (0) or outlined polygon (AA if gfxdraw avail)."""
+        if len(points) < 3:
+            return  # invalid for polygon
+        if len(color) == 3:
+            col = tuple(int(c * 255) for c in color) + (255,)
+        else:
+            col = tuple(int(c * 255) for c in color)
+        if border_width > 0 and HAS_GFXDRAW and aa:
+            gfxdraw.aapolygon(self._2d_surface, points, col[:3])
+        else:
+            pygame.draw.polygon(self._2d_surface, col, points, border_width)
+    
+    def draw_line(self, start: Tuple[int, int], end: Tuple[int, int],
+                  color: ColorType, width: int = 2, aa: bool = True) -> None:  # thicker + AA default
+        """Draw a line (AA via aaline if requested)."""
+        if len(color) == 3:
+            col = tuple(int(c * 255) for c in color) + (255,)
+        else:
+            col = tuple(int(c * 255) for c in color)
+        if aa:
+            # Use built-in AA line (thin; gfxdraw.aaline may vary by pygame version)
+            pygame.draw.aaline(self._2d_surface, col[:3], start, end)
+        else:
+            pygame.draw.line(self._2d_surface, col, start, end, width)
+    
+    def draw_image(self, image: Union[str, pygame.Surface], x: int, y: int,
+                   scale: float = 1.0, alpha: float = 1.0) -> None:
+        """Draw image (path str or Surface). Cached for paths; scale/alpha ok."""
+        if isinstance(image, str):
+            if image not in self._image_cache:
+                surf = pygame.image.load(image).convert_alpha()
+                self._image_cache[image] = surf
+            surf = self._image_cache[image]
+        else:
+            surf = image
+        if scale != 1.0:
+            new_size = (int(surf.get_width() * scale), int(surf.get_height() * scale))
+            surf = pygame.transform.scale(surf, new_size)
+        if alpha < 1.0:
+            surf = surf.copy()
+            surf.set_alpha(int(alpha * 255))
+        self._2d_surface.blit(surf, (x, y))
+    
+    def _render_2d_overlay(self):
+        """Render 2D surface as textured quad on top of 3D scene."""
+        # Upload surface to GPU texture (Pygame RGBA -> OpenGL)
+        data = pygame.image.tostring(self._2d_surface, "RGBA", False)
+        self._2d_texture.write(data)
+        # Draw full-screen quad with blending, no depth
+        self._ctx.disable(moderngl.DEPTH_TEST)
+        self._2d_texture.use(location=0)
+        self._overlay_program['tex'].value = 0
+        self._2d_vao.render(moderngl.TRIANGLES)
+        self._ctx.enable(moderngl.DEPTH_TEST)
     
     # =========================================================================
     # Collider debug drawing
@@ -888,6 +1101,9 @@ class Window3D:
         r, g, b = self.background_color
         self._ctx.clear(r, g, b)
 
+        # Clear 2D overlay surface for new frame (draws happen in on_draw)
+        self._2d_surface.fill((0, 0, 0, 0))
+
         # ------------------------------------------------------------
         # Camera / view setup
         # ------------------------------------------------------------
@@ -1005,6 +1221,9 @@ class Window3D:
         if self._current_view:
             self._current_view.on_draw()
         self.on_draw()
+
+        # Render 2D overlay on top (after all 3D and custom draws)
+        self._render_2d_overlay()
 
         pygame.display.flip()
 
@@ -1132,6 +1351,16 @@ class Window3D:
         if self._current_view:
             for obj in self._current_view.objects:
                 obj._release_gpu()
+        
+        # Release 2D overlay resources
+        if hasattr(self, '_2d_texture'):
+            self._2d_texture.release()
+        if hasattr(self, '_2d_vao'):
+            self._2d_vao.release()
+        if hasattr(self, '_2d_vbo'):
+            self._2d_vbo.release()
+        if hasattr(self, '_overlay_program'):
+            self._overlay_program.release()
         
         self._program.release()
         self._ctx.release()
