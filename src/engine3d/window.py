@@ -460,19 +460,23 @@ class Window3D:
 
     def _process_collisions(self):
         # Separate static/dynamic: only check dynamic-static + dynamic-dynamic
-        all_objs = [o for o in self._active_objects() if o.group is not None]
+        all_objs = [o for o in self._active_objects() if o.group is not None and o.collision_mode != CollisionMode.IGNORE]
         if not all_objs:
             return
 
         from collections import defaultdict
         current_collisions = defaultdict(set)
-        from src.physics.collision import get_collision_manifold
+        from src.physics.collision import get_collision_manifold, objects_collide
+
         # Check non-statics vs all (skip static a + self; covers dynamic-static + dynamic-dynamic)
         for a in all_objs:
             if a.static:
                 continue
             if a.collision_mode == CollisionMode.IGNORE:
                 continue
+            
+            perform_final_check = True
+
             # Continuous: sweep from prev to current (prevents tunnel, respects groups)
             if a.collision_mode == CollisionMode.CONTINUOUS:
                 delta = a._position - a._prev_position
@@ -484,6 +488,8 @@ class Window3D:
                     steps = max(1, int(speed / 0.1))
                     step = delta / steps
                     last_safe = np.copy(a._position)
+                    
+                    # Sweep steps
                     for _ in range(steps):
                         a._position += step
                         a._mark_dirty()
@@ -494,6 +500,8 @@ class Window3D:
                             rel = a.group.get_relation(b.group)
                             if rel == CollisionRelation.IGNORE or b.group.get_relation(a.group) == CollisionRelation.IGNORE:
                                 continue
+                            
+                            # Use optimized boolean check first
                             if a.check_collision(b):
                                 # Detect for events (TRIGGER/SOLID); resolve+stop only SOLID
                                 current_collisions[a].add(b)
@@ -504,60 +512,44 @@ class Window3D:
                                         self._resolve_collision(a, b, manifold)
                                     a.velocity = np.zeros(3, dtype=np.float32)  # stop push into wall
                                     hit_solid = True
-                                break
+                                    break
                         if hit_solid:
                             # Revert to last safe (surface hit, no under-wall)
                             a._position = np.copy(last_safe)
                             a._mark_dirty()
                             break
                         last_safe = np.copy(a._position)
-                    # Extra resolve to unstick on high speed
-                    for b in all_objs:
-                        if b is a or b.group is None:
-                            continue
-                        rel = a.group.get_relation(b.group)
-                        if rel == CollisionRelation.IGNORE or b.group.get_relation(a.group) == CollisionRelation.IGNORE:
-                            continue
-                        if a.check_collision(b):
-                            if rel == CollisionRelation.SOLID or b.group.get_relation(a.group) == CollisionRelation.SOLID:
-                                current_collisions[a].add(b)
-                                current_collisions[b].add(a)
-                                manifold = get_collision_manifold(a.collider, b.collider)
-                                if manifold:
-                                    self._resolve_collision(a, b, manifold)
-            # Collect contacts for continuous objects (events)
-            if a.collision_mode == CollisionMode.CONTINUOUS:
+                    else:
+                        # Completed all steps without hitting solid -> We checked everything for this frame
+                        perform_final_check = False
+            
+            # Normal/continuous snapshot for events (and any remaining SOLID)
+            if perform_final_check:
                 for b in all_objs:
-                    if b is a or b.group is None:
+                    if b is a:
                         continue
                     if (a.group.get_relation(b.group) == CollisionRelation.IGNORE or
                         b.group.get_relation(a.group) == CollisionRelation.IGNORE):
                         continue
                     a._update_cache()
                     b._update_cache()
-                    if a.check_collision(b):
+                    
+                    # Optimized boolean check
+                    if objects_collide(a.collider, b.collider):
+                        rel_ab = a.group.get_relation(b.group)
+                        rel_ba = b.group.get_relation(a.group)
+                        is_solid = (rel_ab == CollisionRelation.SOLID or
+                                    rel_ba == CollisionRelation.SOLID)
+                        
                         current_collisions[a].add(b)
                         current_collisions[b].add(a)
-            # Normal/continuous snapshot for events (and any remaining SOLID)
-            for b in all_objs:
-                if b is a:
-                    continue
-                if (a.group.get_relation(b.group) == CollisionRelation.IGNORE or
-                    b.group.get_relation(a.group) == CollisionRelation.IGNORE):
-                    continue
-                a._update_cache()
-                b._update_cache()
-                if a.check_collision(b):
-                    rel_ab = a.group.get_relation(b.group)
-                    rel_ba = b.group.get_relation(a.group)
-                    is_solid = (rel_ab == CollisionRelation.SOLID or
-                                rel_ba == CollisionRelation.SOLID)
-                    current_collisions[a].add(b)
-                    current_collisions[b].add(a)
-                    if is_solid:
-                        manifold = get_collision_manifold(a.collider, b.collider)
-                        if manifold:
-                            self._resolve_collision(a, b, manifold)
+                        
+                        if is_solid:
+                            manifold = get_collision_manifold(a.collider, b.collider)
+                            if manifold:
+                                self._resolve_collision(a, b, manifold)
+        
+        # Update collision events
         for obj in all_objs:
             prev = obj._current_collisions
             now = current_collisions.get(obj, set())
@@ -568,6 +560,7 @@ class Window3D:
             for other in prev - now:
                 obj.OnCollisionExit(other)
             obj._current_collisions = now.copy()
+            
         # Update prev for next frame (continuous uses it)
         for obj in self._active_objects():
             obj._update_prev_position()
