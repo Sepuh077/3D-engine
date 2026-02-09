@@ -15,7 +15,7 @@ import random
 
 from src.engine3d import Window3D, Keys, Color
 from src.engine3d.object3d import create_cube, create_plane
-from src.physics import ColliderType
+from src.physics import BoxCollider, SphereCollider, CapsuleCollider, Collider
 
 
 class FPSCameraExample(Window3D):
@@ -26,21 +26,22 @@ class FPSCameraExample(Window3D):
         floor = self.add_object(create_plane(50, 50, color=Color.DARK_GRAY))
         floor.position = (0, 0, 0)
         floor.static = True
-        values = ColliderType.all()
+        collider_classes = [BoxCollider, SphereCollider, CapsuleCollider]
         
-        # Create some objects to look at
+        # Create some objects to look at (user adds collider)
         for x in range(-40, 41, 4):
             for z in range(-40, 41, 4):
                 if x == 0 and z == 0:
                     continue
-                cube = self.add_object(create_cube(1.0, color=Color.random_bright(), collider_type=random.choice(values)))
+                cube = self.add_object(create_cube(1.0, color=Color.random_bright()))
                 if random.random() < 0.5:
                     cube.static = True
                 cube.position = (x, 0.5, z)
+                cube.add_component(random.choice(collider_classes)())
         
         # Create taller pillars
         for i in range(4):
-            pillar = self.add_object(create_cube(2.0, color=Color.BLUE, collider_type=random.choice(values)))
+            pillar = self.add_object(create_cube(2.0, color=Color.BLUE))
             angle = i * math.pi / 2
             pillar.position = (
                 15 * math.cos(angle),
@@ -48,6 +49,7 @@ class FPSCameraExample(Window3D):
                 15 * math.sin(angle)
             )
             pillar.scale_xyz = (2, 4, 2)
+            pillar.add_component(random.choice(collider_classes)())
         
         # Load the stairs model
         stairs = self.load_object(
@@ -56,11 +58,13 @@ class FPSCameraExample(Window3D):
             scale=2.0,
             color=Color.ORANGE
         )
+        stairs.add_component(BoxCollider())  # user adds
         
         # Camera setup - first person style
         self.camera.position = (0, 2, 10)
         self.camera.look_at((0, 2, 0))
         self.camera_obj = create_cube(1, self.camera.position)
+        self.camera_obj.add_component(SphereCollider())
         self.camera_obj.impassable_objects.append(floor)
         
         # Mouse look settings
@@ -100,7 +104,10 @@ class FPSCameraExample(Window3D):
                 obj.rotation_y += delta_time * 20
                 obj.rotation_x += delta_time * 10
                 obj.rotation_z += delta_time * 5
-            if obj.check_collision(self.camera_obj):
+            # Check via colliders
+            ocoll = obj.get_component(Collider)
+            ccoll = self.camera_obj.get_component(Collider)
+            if ocoll and ccoll and ocoll.check_collision(ccoll):
                 print(obj)
         
         # Update title
@@ -140,7 +147,7 @@ class FPSCameraExample(Window3D):
 
     def on_draw(self):
         for obj in self.objects:
-            obj.draw_collider(self, color=(0, 1, 0))
+            self.draw_collider(obj, color=(0, 1, 0))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 import numpy as np
-from src.physics.collider import Collider
+from src.physics.collider import Collider, SphereCollider
 from src.physics.geometry import closest_point_on_triangle
 from .types import ColliderType
 
@@ -257,7 +257,7 @@ def collide_point_with_radius(point: np.ndarray, collider: Collider, radius: flo
     """
     Check collision treating the point as a sphere with a given radius.
     """
-    point_proxy = Collider(ColliderType.SPHERE)
+    point_proxy = SphereCollider()
     point_proxy.sphere = (point, radius)
     # Ensure proxy has AABB for broadphase
     point_proxy.aabb = (point - radius, point + radius)

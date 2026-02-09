@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
 
 from src.engine3d import Window3D, Keys, Color
 from src.engine3d.object3d import create_cube, create_plane
-from src.physics import ColliderType
+from src.physics import BoxCollider, SphereCollider, CapsuleCollider, Collider
 
 
 class FPSCameraExample(Window3D):
@@ -48,11 +48,12 @@ class FPSCameraExample(Window3D):
             position=(0, 2, 0),
             scale=2.0,
             # color=[0, 0, 0, 0.5],
-            collider_type=ColliderType.CYLINDER
         )
+        stairs.add_component(CapsuleCollider())  # user adds
         
         # Camera setup - first person style
         self.camera_obj = self.add_object(create_cube(1, (0, 0.5, 0), color=Color.WHITE))
+        self.camera_obj.add_component(SphereCollider())
         self.camera.look_at(self.camera_obj.position)
         self.update_camera_position()
         
@@ -133,8 +134,12 @@ class FPSCameraExample(Window3D):
         for obj in self.objects:
             # if obj.name == "cube":
             #     obj.rotation_y += delta_time * 20
-            if obj != self.camera_obj and obj.check_collision(self.camera_obj):
-                print(True)
+            # Check via colliders
+            if obj != self.camera_obj:
+                ocoll = obj.get_component(Collider)
+                ccoll = self.camera_obj.get_component(Collider)
+                if ocoll and ccoll and ocoll.check_collision(ccoll):
+                    print(True)
         
         # Update title
         pos = self.camera.position
@@ -160,7 +165,7 @@ class FPSCameraExample(Window3D):
     def on_draw(self):
         super().on_draw()
         for obj in self.objects:
-            obj.draw_collider(self, Color.RED)
+            self.draw_collider(obj, Color.RED)
 
 
 if __name__ == "__main__":

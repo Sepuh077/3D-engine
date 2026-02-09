@@ -4,8 +4,7 @@ import numpy as np
 import trimesh
 from typing import Tuple, Optional, List, TYPE_CHECKING
 
-from src.physics import ColliderType, CollisionMode, ObjectGroup
-from src.physics.collider import Collider
+from src.physics import Component, Collider, Rigidbody
 from trimesh.visual.texture import TextureVisuals
 from .color import ColorType, Color
 
@@ -21,12 +20,10 @@ class Object3D:
         position=(0, 0, 0),
         scale: float = 1.0,
         color: Optional[ColorType] = None,
-        collider_type: str = ColliderType.CUBE,
-        collision_mode: CollisionMode = CollisionMode.NORMAL,
     ):
         # ---------------- Transform ----------------
         self._position = np.array(position, dtype=np.float32)
-        self._rotation = np.zeros(3, dtype=np.float32)  # radians
+        self._rotation = np.zeros(3, dtype=np.float32)
         self._scale = np.array([scale, scale, scale], dtype=np.float32)
 
         self._transform_dirty = True
@@ -35,11 +32,7 @@ class Object3D:
         self._cached_rotation = None
         self._cached_model = None
         
-        # Collider
-        self.collider = Collider(collider_type)
-
         # ---------------- Geometry ----------------
-        # Use trimesh for vertices, faces, normals, colors, UVs
         self.mesh: Optional[trimesh.Trimesh] = None
 
         self._local_min = None
@@ -52,7 +45,6 @@ class Object3D:
         self._uv = None
 
         # ---------------- Misc ----------------
-        # Normalize color (support 0-1 or 0-255 tuples)
         c = color if color is not None else (1, 1, 1)
         c = np.array(c, dtype=np.float32)
         if c.max() > 1.0:
@@ -64,10 +56,7 @@ class Object3D:
         self._static = False
         self.name = "Object3D"
         self.tag = None
-        self.group: Optional[ObjectGroup] = None
-        self._current_collisions: set = set()
         self.velocity = np.zeros(3, dtype=np.float32)
-        self._collision_mode = collision_mode
         self._prev_position = np.copy(self._position)
 
         # GPU handles (initialized later)
@@ -78,6 +67,9 @@ class Object3D:
         # Mesh identity for batching/instancing
         self._mesh_key = None
         self._mesh = None
+
+        # Components (user adds Collider/Rigidbody etc separately)
+        self.components: List[Component] = []
 
         if filename:
             self.load(filename)
@@ -225,9 +217,29 @@ class Object3D:
             colors = np.full((len(mesh.vertices), 4), base, dtype=np.float32)
             mesh.visual.vertex_colors = colors
 
-    # Dirty flag helper
+    # Dirty flag helper (marks transform dirty + colliders for runtime update)
     def _mark_dirty(self):
         self._transform_dirty = True
+        # Mark colliders dirty (for lazy bounds update)
+        for comp in self.components:
+            if isinstance(comp, Collider):
+                comp._transform_dirty = True
+
+    # Component system (add/get like Unity)
+    def add_component(self, component: Component) -> Component:
+        component.object3d = self
+        component.on_attach()
+        self.components.append(component)
+        return component
+
+    def get_component(self, component_type: type) -> Optional[Component]:
+        for comp in self.components:
+            if isinstance(comp, component_type):
+                return comp
+        return None
+
+    def get_components(self, component_type: type) -> List[Component]:
+        return [comp for comp in self.components if isinstance(comp, component_type)]
 
     # =========================================================================
     # Position properties
@@ -435,27 +447,6 @@ class Object3D:
         """Set non-uniform scale."""
         self._scale = np.array(value, dtype=np.float32)
         self._mark_dirty()
-
-    # =========================================================================
-    # Collider properties
-    # =========================================================================
-
-    @property
-    def collider_type(self) -> str:
-        """Type of collider: cube (OBB), sphere or cylinder."""
-        return self.collider.type
-
-    @collider_type.setter
-    def collider_type(self, value: ColliderType):
-        self.collider.type = value
-
-    @property
-    def collision_mode(self) -> CollisionMode:
-        return self._collision_mode
-
-    @collision_mode.setter
-    def collision_mode(self, value: CollisionMode):
-        self._collision_mode = value
     
     # =========================================================================
     # Appearance properties
@@ -520,11 +511,29 @@ class Object3D:
         return self._mesh_key
     
     # =========================================================================
-    # Model matrix
+    # Model matrix (for rendering; no collider)
     # =========================================================================
     
     def get_model_matrix(self) -> np.ndarray:
-        self._update_cache()
+        if not self._transform_dirty:
+            return self._cached_model
+        # Rotation matrix
+        cx, cy, cz = np.cos(self._rotation)
+        sx, sy, sz = np.sin(self._rotation)
+        Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]], dtype=np.float32)
+        Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]], dtype=np.float32)
+        Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]], dtype=np.float32)
+        R = Rx @ Ry @ Rz
+        self._cached_rotation = R
+        # Model
+        sx, sy, sz = self._scale
+        tx, ty, tz = self._position
+        S = np.array([[sx, 0, 0, 0], [0, sy, 0, 0], [0, 0, sz, 0], [0, 0, 0, 1]], dtype=np.float32)
+        R4 = np.eye(4, dtype=np.float32)
+        R4[:3, :3] = R
+        T = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [tx, ty, tz, 1]], dtype=np.float32)
+        self._cached_model = S @ R4 @ T
+        self._transform_dirty = False
         return self._cached_model
     
     # GPU helper for moderngl rendering
@@ -605,176 +614,14 @@ class Object3D:
             self._vbo = None
         self._gpu_initialized = False
 
-    def _update_cache(self):
-        if not self._transform_dirty:
-            return
-
-        # ----- Rotation matrix (ONCE) -----
+    def _rotation_matrix(self):
         cx, cy, cz = np.cos(self._rotation)
         sx, sy, sz = np.sin(self._rotation)
 
         Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]], dtype=np.float32)
         Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]], dtype=np.float32)
         Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]], dtype=np.float32)
-
-        R = Rx @ Ry @ Rz
-        self._cached_rotation = R
-
-        extents = (self._local_max - self._local_min) * 0.5 * self._scale
-        local_center = (self._local_min + self._local_max) * 0.5
-
-        center_offset = R @ (local_center * self._scale)
-        base_center = self._position + center_offset
-
-        # ----- Dimensions for Offsets -----
-        # Calculate Base AABB dimensions (width, height, depth) of the mesh/geometry
-        # This corresponds to (max_x - min_x) etc. BEFORE collider offset
-        absR = np.abs(R)
-        half_extents = absR @ extents
-        aabb_dims = half_extents * 2
-        
-        # Calculate collider center offset
-        # user formula: object.center + [(width * 0.2), ...]
-        c_offset = aabb_dims * np.array(self.collider.center, dtype=np.float32)
-        collider_center = base_center + c_offset
-
-        # ----- OBB -----
-        # Apply size multiplier for Cube/OBB
-        obb_extents = extents * np.array(self.collider.size, dtype=np.float32)
-        obb = (collider_center, R, obb_extents)
-
-        # ----- Sphere -----
-        # Apply radius multiplier
-        radius = self._local_radius * np.max(np.abs(self._scale)) * self.collider.radius
-        sphere = (collider_center, float(radius))
-
-        # ----- AABB from OBB (fast way) -----
-        # This is the AABB of the COLLIDER
-        half = absR @ obb_extents
-        aabb = (collider_center - half, collider_center + half)
-
-        # ----- Cylinder -----
-        half_ext = (self._local_max - self._local_min) * 0.5 * np.abs(self._scale)
-        cyl_radius = float(np.maximum(half_ext[0], half_ext[2])) * self.collider.radius
-        half_height = float(half_ext[1]) * self.collider.height
-
-        cylinder = (collider_center, cyl_radius, half_height)
-        
-        self.collider.update(sphere, obb, aabb, cylinder)
-
-        # ----- Model matrix (row-major, matches view/projection math) -----
-        sx, sy, sz = self._scale
-        tx, ty, tz = self._position
-
-        S = np.array([
-            [sx, 0,  0,  0],
-            [0,  sy, 0,  0],
-            [0,  0,  sz, 0],
-            [0,  0,  0,  1],
-        ], dtype=np.float32)
-
-        R4 = np.eye(4, dtype=np.float32)
-        R4[:3, :3] = R
-
-        T = np.array([
-            [1, 0, 0, 0],
-            [0, 1, 0, 0],
-            [0, 0, 1, 0],
-            [tx, ty, tz, 1],
-        ], dtype=np.float32)
-
-        model = S @ R4 @ T
-
-        self._cached_model = model
-        
-        # Mesh data for collision (uses trimesh)
-        mesh_data = (self.mesh.vertices, self.mesh.faces, model)
-        
-        self.collider.update(sphere, obb, aabb, cylinder, mesh_data)
-
-        self._transform_dirty = False
-
-
-    def _rotation_matrix(self):
-        cx, cy, cz = np.cos(self._rotation)
-        sx, sy, sz = np.sin(self._rotation)
-
-        Rx = np.array([
-            [1, 0, 0],
-            [0, cx, -sx],
-            [0, sx, cx]
-        ], dtype=np.float32)
-
-        Ry = np.array([
-            [cy, 0, sy],
-            [0, 1, 0],
-            [-sy, 0, cy]
-        ], dtype=np.float32)
-
-        Rz = np.array([
-            [cz, -sz, 0],
-            [sz, cz, 0],
-            [0, 0, 1]
-        ], dtype=np.float32)
-
         return Rx @ Ry @ Rz
-
-    def world_aabb(self):
-        self._update_cache()
-        return self.collider.get_world_aabb()
-
-    def world_obb(self):
-        self._update_cache()
-        return self.collider.get_world_obb()
-
-    def world_sphere(self):
-        self._update_cache()
-        return self.collider.get_world_sphere()
-
-    def world_cylinder(self):
-        self._update_cache()
-        return self.collider.get_world_cylinder()
-
-    def draw_collider(self, window: 'Window3D', color: Tuple[float, float, float] = (0, 1, 0), line_width: float = 1.0):
-        """
-        Convenience to draw this object's collider via a Window3D.
-        """
-        window.draw_collider(self, color=color, line_width=line_width)
-
-    # =========================================================================
-    # Collision helpers
-    # =========================================================================
-
-    def check_collision(self, other: 'Object3D') -> bool:
-        """
-        Check collision with another object based on collider types.
-        """
-        if other is None:
-            return False
-        
-        self._update_cache()
-        other._update_cache()
-        
-        from src.physics.collision import objects_collide
-        return objects_collide(self.collider, other.collider)
-
-    def contains_point(self, point: Tuple[float, float, float], radius: float = 1.0) -> bool:
-        """
-        Check if a 3D point is interacting with this object.
-        Treats the point as a sphere with the given radius.
-        """
-        self._update_cache()
-        from src.physics.collision import collide_point_with_radius
-        return collide_point_with_radius(np.array(point, dtype=np.float32), self.collider, radius)
-
-    def OnCollisionEnter(self, other: 'Object3D'):
-        pass
-
-    def OnCollisionExit(self, other: 'Object3D'):
-        pass
-
-    def OnCollisionStay(self, other: 'Object3D'):
-        pass
 
     def __repr__(self):
         return f"Object3D(name='{hash(self)}', position={self.position}, scale={self.scale})"
@@ -786,11 +633,9 @@ class Object3D:
 
 def create_cube(size: float = 1.0, 
                 position: Tuple[float, float, float] = (0, 0, 0),
-                color: Optional[ColorType] = None,
-                collider_type: str = ColliderType.CUBE,
-                collision_mode: CollisionMode = CollisionMode.NORMAL) -> Object3D:
+                color: Optional[ColorType] = None) -> Object3D:
     """
-    Create a cube primitive.
+    Create a cube primitive (add Collider separately if needed).
     
     Args:
         size: Cube size
@@ -800,7 +645,7 @@ def create_cube(size: float = 1.0,
     Returns:
         Object3D cube
     """
-    obj = Object3D(position=position, color=color, collider_type=collider_type, collision_mode=collision_mode)
+    obj = Object3D(position=position, color=color)
     
     s = size / 2
     vertices = np.array([
@@ -831,11 +676,9 @@ def create_cube(size: float = 1.0,
 def create_plane(width: float = 10.0, 
                  height: float = 10.0,
                  position: Tuple[float, float, float] = (0, 0, 0),
-                 color: Optional[ColorType] = None,
-                 collider_type: str = ColliderType.CUBE,
-                 collision_mode: CollisionMode = CollisionMode.NORMAL) -> Object3D:
+                 color: Optional[ColorType] = None) -> Object3D:
     """
-    Create a horizontal plane primitive.
+    Create a horizontal plane primitive (add Collider separately if needed).
     
     Args:
         width: Plane width (X axis)
@@ -846,7 +689,7 @@ def create_plane(width: float = 10.0,
     Returns:
         Object3D plane
     """
-    obj = Object3D(position=position, color=color, collider_type=collider_type, collision_mode=collision_mode)
+    obj = Object3D(position=position, color=color)
     
     w, h = width / 2, height / 2
     vertices = np.array([

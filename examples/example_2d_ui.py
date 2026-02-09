@@ -37,12 +37,12 @@ class UIExample(Window3D):
             cube = self.add_object(create_cube(1.0, color=Color.random_bright()))
             angle = i * (2 * math.pi / 8)
             cube.position = (5 * math.cos(angle), 0.5, 5 * math.sin(angle))
-            cube.collider_type = ColliderType.CUBE
+            # collider_type set via component (default CUBE)
 
         # Player cube
         self.player = self.add_object(create_cube(1.0, color=Color.YELLOW))
         self.player.position = (0, 0.5, 0)
-        self.player.collider_type = ColliderType.CUBE
+        # collider_type set via component (default CUBE)
 
         # Camera
         self.camera.position = (0, 8, 15)

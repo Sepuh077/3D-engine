@@ -20,7 +20,7 @@ from .camera import Camera3D
 from .light import Light3D
 from .color import Color, ColorType
 from .keys import Keys
-from src.physics import ColliderType, CollisionMode, CollisionRelation, ObjectGroup
+from src.physics import ColliderType, CollisionMode, Collider
 
 try:
     import moderngl
@@ -410,7 +410,9 @@ class Window3D:
         """
         Move an object by delta.
         """
-        if obj.collision_mode == CollisionMode.IGNORE:
+        # Check first collider's mode (IGNORE skips collision)
+        coll = obj.get_component(Collider)
+        if coll and coll.collision_mode == CollisionMode.IGNORE:
             return obj.move(*delta)
         return obj.move(*delta)
 
@@ -432,7 +434,9 @@ class Window3D:
             else:
                 b.velocity -= dot * normal
             b._mark_dirty()
-            b._update_cache()
+            # Update colliders (moved from obj._update_cache)
+            for c in b.get_components(Collider):
+                c.update_bounds()
         elif b.static:
             a._position += normal * push
             # Project a vel: full stop if into, else slide
@@ -442,7 +446,8 @@ class Window3D:
             else:
                 a.velocity -= dot * normal
             a._mark_dirty()
-            a._update_cache()
+            for c in a.get_components(Collider):
+                c.update_bounds()
         else:
             a._position += normal * (push / 2)
             b._position -= normal * (push / 2)
@@ -455,111 +460,103 @@ class Window3D:
                     obj.velocity -= dot * normal  # allow slide
             a._mark_dirty()
             b._mark_dirty()
-            a._update_cache()
-            b._update_cache()
+            for c in a.get_components(Collider):
+                c.update_bounds()
+            for c in b.get_components(Collider):
+                c.update_bounds()
 
     def _process_collisions(self):
-        # Separate static/dynamic: only check dynamic-static + dynamic-dynamic
-        all_objs = [o for o in self._active_objects() if o.group is not None and o.collision_mode != CollisionMode.IGNORE]
-        if not all_objs:
+        # Loop over *all colliders* (multi-collider support; no obj level)
+        all_cols = []
+        for o in self._active_objects():
+            all_cols.extend(o.get_components(Collider))
+        if not all_cols:
             return
 
         from collections import defaultdict
-        current_collisions = defaultdict(set)
+        # Track collider pairs (per-collider _current_collisions for events)
+        current_collisions = defaultdict(set)  # key: collider, value: set of other colliders
         from src.physics.collision import get_collision_manifold, objects_collide
 
-        # Check non-statics vs all (skip static a + self; covers dynamic-static + dynamic-dynamic)
-        for a in all_objs:
-            if a.static:
-                continue
-            if a.collision_mode == CollisionMode.IGNORE:
+        # Check non-statics vs all (masks replace groups/relations; check *all* collider pairs)
+        for ca in all_cols:
+            if ca.object3d.static or ca.collision_mode == CollisionMode.IGNORE:
                 continue
             
             perform_final_check = True
 
-            # Continuous: sweep from prev to current (prevents tunnel, respects groups)
-            if a.collision_mode == CollisionMode.CONTINUOUS:
+            # Continuous sweep (per obj of collider)
+            a = ca.object3d
+            if ca.collision_mode == CollisionMode.CONTINUOUS:
                 delta = a._position - a._prev_position
                 speed = np.linalg.norm(delta)
                 if speed > 1e-6:
-                    final_pos = np.copy(a._position)
                     a._position = np.copy(a._prev_position)
                     a._mark_dirty()
                     steps = max(1, int(speed / 0.1))
                     step = delta / steps
                     last_safe = np.copy(a._position)
                     
-                    # Sweep steps
                     for _ in range(steps):
                         a._position += step
                         a._mark_dirty()
                         hit_solid = False
-                        for b in all_objs:
-                            if b is a or b.group is None:
+                        for cb in all_cols:
+                            if cb is ca or cb.object3d is a:
                                 continue
-                            rel = a.group.get_relation(b.group)
-                            if rel == CollisionRelation.IGNORE or b.group.get_relation(a.group) == CollisionRelation.IGNORE:
+                            # Mask filter
+                            if (ca.layer & cb.collision_mask) == 0 or (cb.layer & ca.collision_mask) == 0:
                                 continue
-                            
-                            # Use optimized boolean check first
-                            if a.check_collision(b):
-                                # Detect for events (TRIGGER/SOLID); resolve+stop only SOLID
-                                current_collisions[a].add(b)
-                                current_collisions[b].add(a)
-                                if rel == CollisionRelation.SOLID or b.group.get_relation(a.group) == CollisionRelation.SOLID:
-                                    manifold = get_collision_manifold(a.collider, b.collider)
+                            if ca.check_collision(cb):
+                                current_collisions[ca].add(cb)
+                                current_collisions[cb].add(ca)
+                                # Block if mode NORMAL/CONTINUOUS (solid); TRIGGER detect but pass
+                                if ca.collision_mode in (CollisionMode.NORMAL, CollisionMode.CONTINUOUS):
+                                    manifold = get_collision_manifold(ca, cb)
                                     if manifold:
-                                        self._resolve_collision(a, b, manifold)
-                                    a.velocity = np.zeros(3, dtype=np.float32)  # stop push into wall
+                                        self._resolve_collision(a, cb.object3d, manifold)
+                                    a.velocity = np.zeros(3, dtype=np.float32)
                                     hit_solid = True
                                     break
                         if hit_solid:
-                            # Revert to last safe (surface hit, no under-wall)
                             a._position = np.copy(last_safe)
                             a._mark_dirty()
                             break
                         last_safe = np.copy(a._position)
                     else:
-                        # Completed all steps without hitting solid -> We checked everything for this frame
                         perform_final_check = False
             
-            # Normal/continuous snapshot for events (and any remaining SOLID)
+            # Normal snapshot
             if perform_final_check:
-                for b in all_objs:
-                    if b is a:
+                for cb in all_cols:
+                    if cb is ca or cb.object3d is a:
                         continue
-                    if (a.group.get_relation(b.group) == CollisionRelation.IGNORE or
-                        b.group.get_relation(a.group) == CollisionRelation.IGNORE):
+                    # Mask filter
+                    if (ca.layer & cb.collision_mask) == 0 or (cb.layer & ca.collision_mask) == 0:
                         continue
-                    a._update_cache()
-                    b._update_cache()
-                    
-                    # Optimized boolean check
-                    if objects_collide(a.collider, b.collider):
-                        rel_ab = a.group.get_relation(b.group)
-                        rel_ba = b.group.get_relation(a.group)
-                        is_solid = (rel_ab == CollisionRelation.SOLID or
-                                    rel_ba == CollisionRelation.SOLID)
-                        
-                        current_collisions[a].add(b)
-                        current_collisions[b].add(a)
-                        
+                    ca.update_bounds()
+                    cb.update_bounds()
+                    if objects_collide(ca, cb):
+                        current_collisions[ca].add(cb)
+                        current_collisions[cb].add(ca)
+                        # Detect; block if mode NORMAL/CONTINUOUS; TRIGGER detect but pass
+                        is_solid = ca.collision_mode in (CollisionMode.NORMAL, CollisionMode.CONTINUOUS)
                         if is_solid:
-                            manifold = get_collision_manifold(a.collider, b.collider)
+                            manifold = get_collision_manifold(ca, cb)
                             if manifold:
-                                self._resolve_collision(a, b, manifold)
+                                self._resolve_collision(a, cb.object3d, manifold)
         
-        # Update collision events
-        for obj in all_objs:
-            prev = obj._current_collisions
-            now = current_collisions.get(obj, set())
-            for other in now - prev:
-                obj.OnCollisionEnter(other)
-            for other in now & prev:
-                obj.OnCollisionStay(other)
-            for other in prev - now:
-                obj.OnCollisionExit(other)
-            obj._current_collisions = now.copy()
+        # Update collision events (per-collider _current_collisions)
+        for c in all_cols:
+            prev = c._current_collisions
+            now = current_collisions.get(c, set())
+            for oc in now - prev:
+                c.OnCollisionEnter(oc)
+            for oc in now & prev:
+                c.OnCollisionStay(oc)
+            for oc in prev - now:
+                c.OnCollisionExit(oc)
+            c._current_collisions = now.copy()
             
         # Update prev for next frame (continuous uses it)
         for obj in self._active_objects():
@@ -1156,10 +1153,15 @@ class Window3D:
         self._ctx.line_width = line_width
         self._collider_program['color'].value = tuple(color)
 
-        t = obj.collider_type
+        # Use first collider (normal case; supports multi via get_components)
+        coll = obj.get_component(Collider)
+        if not coll:
+            return
+        t = coll.type
 
         if t == ColliderType.CUBE:
-            center, axes, extents = obj.world_obb()
+            # Call collider methods (no world_* on Object3D)
+            center, axes, extents = coll.get_world_obb() or (np.zeros(3), np.eye(3), np.ones(3))
 
             S = np.array([
                 [extents[0], 0, 0, 0],
@@ -1183,7 +1185,7 @@ class Window3D:
             vao = self._cube_vao
 
         elif t == ColliderType.SPHERE:
-            center, radius = obj.world_sphere()
+            center, radius = coll.get_world_sphere() or (np.zeros(3), 1.0)
 
             model = np.eye(4, dtype=np.float32)
             model[:3, :3] *= radius
@@ -1192,8 +1194,8 @@ class Window3D:
             vao = self._sphere_vao
 
         elif t == ColliderType.CYLINDER:
-            center, radius, half_h = obj.world_cylinder()
-            _, axes, _ = obj.world_obb()
+            center, radius, half_h = coll.get_world_cylinder() or (np.zeros(3), 1.0, 1.0)
+            _, axes, _ = coll.get_world_obb() or (np.zeros(3), np.eye(3), np.ones(3))
 
             S = np.array([
                 [radius, 0, 0, 0],
@@ -1218,7 +1220,7 @@ class Window3D:
             
         elif t == ColliderType.MESH:
             # Fallback to drawing OBB for Mesh colliders
-            center, axes, extents = obj.world_obb()
+            center, axes, extents = coll.get_world_obb() or (np.zeros(3), np.eye(3), np.ones(3))
 
             S = np.array([
                 [extents[0], 0, 0, 0],

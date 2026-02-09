@@ -16,7 +16,7 @@ sys.path.insert(0, project_root)
 
 from src.engine3d import Window3D, Keys, Color
 from src.engine3d.object3d import create_cube, create_plane
-from src.physics import ColliderType
+from src.physics import BoxCollider, SphereCollider, Collider
 
 
 class CollisionExample(Window3D):
@@ -28,6 +28,7 @@ class CollisionExample(Window3D):
         floor = self.add_object(create_plane(50, 50, color=Color.DARK_GRAY))
         floor.position = (0, 0, 0)
         floor.static = True
+        floor.add_component(BoxCollider())  # user adds
 
         self.obstacles = []
         # 2 cube obstacles, 2 sphere obstacles
@@ -37,15 +38,17 @@ class CollisionExample(Window3D):
             (0, 1, -5),
             (0, 1, 5)
         ]
-        collider_types = [ColliderType.CUBE, ColliderType.CUBE, ColliderType.SPHERE, ColliderType.SPHERE]
+        colliders = [BoxCollider, BoxCollider, SphereCollider, SphereCollider]
         for i in range(4):
-            obs = self.add_object(create_cube(2.0, color=Color.GREEN, collider_type=collider_types[i]))
+            obs = self.add_object(create_cube(2.0, color=Color.GREEN))
             obs.position = positions[i]
+            obs.add_component(colliders[i]())  # user adds
             self.obstacles.append(obs)
 
         # Create a moving player object (sphere collider for testing sphere-sphere)
-        self.player = self.add_object(create_cube(1.0, color=Color.BLUE, collider_type=ColliderType.SPHERE))
+        self.player = self.add_object(create_cube(1.0, color=Color.BLUE))
         self.player.position = (0, 0.5, 0)
+        self.player.add_component(SphereCollider())  # user adds
         self.player.impassable_objects.extend(self.obstacles)
         self.player.impassable_objects.append(floor)
 
@@ -89,8 +92,10 @@ class CollisionExample(Window3D):
             enemy.z = math.sin(angle) * radius
             enemy.y = 0.75
 
-            # Check collision with player
-            if self.player.check_collision(enemy):
+            # Check collision with player (via colliders)
+            pcoll = self.player.get_component(Collider)
+            ecoll = enemy.get_component(Collider)
+            if pcoll and ecoll and pcoll.check_collision(ecoll):
                 # Collision detected - change color or something
                 enemy._color = np.array(Color.YELLOW, dtype=np.float32)
             else:
@@ -138,7 +143,7 @@ class CollisionExample(Window3D):
     def on_draw(self):
         if self.show_bounding_boxes:
             for obj in self.objects:
-                obj.draw_collider(self, Color.WHITE)
+                self.draw_collider(obj, Color.WHITE)
         return super().on_draw()
 
 

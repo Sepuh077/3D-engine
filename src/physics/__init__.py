@@ -1,10 +1,18 @@
 from .types import ColliderType, CollisionMode, CollisionRelation
-from .group import ObjectGroup
+from .component import Component, Rigidbody
+from .collider import Collider, BoxCollider, SphereCollider, CapsuleCollider  # re-export
+from .group import ColliderGroup
 
 
 __all__ = [
     "ColliderType",
     "CollisionMode",
     "CollisionRelation",
-    "ObjectGroup"
+    "Component",
+    "Rigidbody",
+    "Collider",
+    "BoxCollider",
+    "SphereCollider",
+    "CapsuleCollider",
+    "ColliderGroup",
 ]

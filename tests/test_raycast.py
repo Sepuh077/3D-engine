@@ -6,14 +6,13 @@ import os
 # Ensure src is in path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.physics.collider import Collider
-from src.physics.types import ColliderType
+from src.physics.collider import Collider, SphereCollider, BoxCollider
 from src.physics.raycast import Ray, raycast, raycast_all, RaycastHit
 
 def test_ray_sphere():
     print("Testing Ray-Sphere...")
     # Sphere at (0,0,5) radius 1
-    c = Collider(ColliderType.SPHERE)
+    c = SphereCollider()
     c.sphere = (np.array([0,0,5], dtype=np.float32), 1.0)
     c.aabb = (np.array([-1,-1,4], dtype=np.float32), np.array([1,1,6], dtype=np.float32)) # Mock AABB
     
@@ -32,7 +31,7 @@ def test_ray_sphere():
 def test_ray_obb():
     print("Testing Ray-OBB...")
     # Cube at (5,0,0) size 2 (extents 1)
-    c = Collider(ColliderType.CUBE)
+    c = BoxCollider()
     R = np.eye(3, dtype=np.float32)
     # Correct OBB setup: center, axes, extents
     c.obb = (np.array([5,0,0], dtype=np.float32), R, np.array([1,1,1], dtype=np.float32))
