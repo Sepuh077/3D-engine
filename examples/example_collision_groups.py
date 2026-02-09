@@ -15,7 +15,7 @@ sys.path.insert(0, project_root)
 
 from src.engine3d import Window3D, Keys, Color
 from src.engine3d.object3d import create_cube, create_plane, Object3D
-from src.physics import CollisionMode, BoxCollider, SphereCollider, CapsuleCollider, Collider
+from src.physics import CollisionMode, CollisionRelation, BoxCollider, SphereCollider, CapsuleCollider, Collider, ColliderGroup
 
 
 # Player uses custom OnCollision* (now on collider; other is Collider, main obj via .object3d)
@@ -34,7 +34,7 @@ def make_player_callbacks(player):
         print(f"Player exited collision with {other_obj.name or 'obj'}")
     def on_stay(other):
         other_obj = other.object3d
-        # Use name/layer (masks replace groups)
+        # Stay only for walls/floor (by name)
         if getattr(other_obj, 'name', '') == "Wall" or getattr(other_obj, 'name', '') == "Floor":
             print(f"Player Stayed ---------------- with {other_obj.name or 'obj'}")
     if player_coll:
@@ -44,7 +44,7 @@ def make_player_callbacks(player):
 
 
 class CollisionGroupsExample(Window3D):
-    """Tests layer/mask collision filtering (replaces groups)."""
+    """Demo using ColliderGroup for collision relations (Trigger/Normal/Ignore)."""
     
     def setup(self):
         # Floor (solid with player; add collider separately)
@@ -54,9 +54,19 @@ class CollisionGroupsExample(Window3D):
         floor.name = "Floor"
         fcoll = floor.add_component(BoxCollider())
         fcoll.collision_mode = CollisionMode.NORMAL
-        fcoll.layer = 1
-        fcoll.collision_mask = 0xffffffff
-        
+
+        # Define groups + relations (Trigger=detect/pass, Normal=block, Ignore=skip)
+        # (default group SOLID with all; explicit overrides here)
+        player_group = ColliderGroup("player")
+        wall_group = ColliderGroup("wall")
+        trigger_group = ColliderGroup("trigger")
+        ignore_group = ColliderGroup("ignore")
+        wall_group.add_group(player_group, CollisionRelation.SOLID)
+        trigger_group.add_group(player_group, CollisionRelation.TRIGGER)
+        ignore_group.add_group(player_group, CollisionRelation.IGNORE)
+        # Floor uses wall_group (solid)
+        fcoll.group = wall_group
+
         # Walls (solid)
         self.walls = []
         wall_positions = [(-10, 1, 0), (10, 1, 0), (0, 1, -10), (0, 1, 10)]
@@ -67,8 +77,7 @@ class CollisionGroupsExample(Window3D):
             wall.name = "Wall"
             wcoll = wall.add_component(BoxCollider())
             wcoll.collision_mode = CollisionMode.NORMAL
-            wcoll.layer = 1
-            wcoll.collision_mask = 0xffffffff
+            wcoll.group = wall_group
             self.walls.append(wall)
         
         # Trigger objects (pass through, change color on contact)
@@ -82,8 +91,7 @@ class CollisionGroupsExample(Window3D):
             trig.color_on_trigger = Color.PURPLE
             tcoll = trig.add_component(SphereCollider())
             tcoll.collision_mode = CollisionMode.TRIGGER  # detect but pass
-            tcoll.layer = 2
-            tcoll.collision_mask = 0xffffffff
+            tcoll.group = trigger_group
             self.triggers.append(trig)
         
         # Ignore objects (can overlap freely, no events)
@@ -95,8 +103,7 @@ class CollisionGroupsExample(Window3D):
             ign.name = f"Ignore{i}"
             icoll = ign.add_component(BoxCollider())
             icoll.collision_mode = CollisionMode.IGNORE
-            icoll.layer = 3
-            icoll.collision_mask = 0  # ignore all
+            icoll.group = ignore_group
             self.ignores.append(ign)
         
         # Player (cube collider + mesh; user adds collider separately)
@@ -106,11 +113,10 @@ class CollisionGroupsExample(Window3D):
         self.player.position = (0, 0.5, 0)
         self.player.name = "Player"
         self.player.move_speed = 100.0
-        # Add collider with mode/mask (masks replace groups/relations)
+        # Add collider (mode kept; group sets relations)
         pcoll = self.player.add_component(BoxCollider())
         pcoll.collision_mode = CollisionMode.CONTINUOUS
-        pcoll.layer = 10
-        pcoll.collision_mask = 0xffffffff  # collide all
+        pcoll.group = player_group
         self.player.collision_modes = [CollisionMode.NORMAL, CollisionMode.CONTINUOUS, CollisionMode.IGNORE]
         self.player.mode_idx = 1
         # Attach callbacks
@@ -186,7 +192,7 @@ class CollisionGroupsExample(Window3D):
         # Draw colliders if enabled
         if self.show_colliders:
             for obj in self.objects:
-                # Color by group (legacy; now use masks)
+                # Color by type/group
                 col = Color.WHITE
                 if obj == self.player:
                     col = Color.BLUE
@@ -203,7 +209,7 @@ class CollisionGroupsExample(Window3D):
 
 
 if __name__ == "__main__":
-    print("=== ObjectGroup Collision System Demo ===")
+    print("=== ColliderGroup Collision Demo ===")
     print("Controls:")
     print("  WASD/Arrows - Move player")
     print("  1/2/3 - Set speed (10/100/1000)")
@@ -211,13 +217,13 @@ if __name__ == "__main__":
     print("  SPACE - Toggle colliders")
     print("  ESC - Quit")
     print()
-    print("Groups:")
-    print("  Blue player (cube): collides with walls (red, blocks), triggers (purple, pass-thru), ignores orange")
-    print("  Red walls: solid, block player")
-    print("  Purple triggers: pass through, change color on contact, OnCollision* called")
-    print("  Orange ignores: overlap freely, no detection/events")
+    print("Groups (relations):")
+    print("  Blue player: SOLID with walls (blocks), TRIGGER with purple (pass), IGNORE orange")
+    print("  Red walls: solid block")
+    print("  Purple triggers: detect/pass + color/OnCollision*")
+    print("  Orange ignores: no detect/events")
     print()
-    print("Watch console for Enter/Exit prints and color changes.")
+    print("Watch console for prints/color changes.")
     print()
-    game = CollisionGroupsExample(900, 600, "Engine3D - ObjectGroup Collision Demo")
+    game = CollisionGroupsExample(900, 600, "Engine3D - ColliderGroup Demo")
     game.run()

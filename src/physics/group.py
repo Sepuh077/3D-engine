@@ -24,7 +24,7 @@ class ColliderGroup:
             return CollisionRelation.TRIGGER
         if other in self.collision or self in other.collision:
             return CollisionRelation.SOLID
-        return CollisionRelation.IGNORE
+        return CollisionRelation.SOLID  # default Normal (block) if unspecified
 
     def add_group(self, other: 'ColliderGroup', relation: CollisionRelation):
         if other is self:

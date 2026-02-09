@@ -33,8 +33,3 @@ class CollisionMode(IntEnum):
     CONTINUOUS = 1
     IGNORE = 2
     TRIGGER = 3
-
-# Layer/mask system (Unity-style for filtering; 32 layers)
-# Collider.layer: int (0-31, default 0)
-# Collider.collision_mask: int (bitmask, default all layers collide)
-# If (layer & other.collision_mask) == 0 or vice-versa: ignore (no detect/block)

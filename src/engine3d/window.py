@@ -20,7 +20,7 @@ from .camera import Camera3D
 from .light import Light3D
 from .color import Color, ColorType
 from .keys import Keys
-from src.physics import ColliderType, CollisionMode, Collider
+from src.physics import ColliderType, CollisionMode, CollisionRelation, Collider
 
 try:
     import moderngl
@@ -478,7 +478,7 @@ class Window3D:
         current_collisions = defaultdict(set)  # key: collider, value: set of other colliders
         from src.physics.collision import get_collision_manifold, objects_collide
 
-        # Check non-statics vs all (masks replace groups/relations; check *all* collider pairs)
+        # Check non-statics vs all (use ColliderGroup for relations; *all* pairs)
         for ca in all_cols:
             if ca.object3d.static or ca.collision_mode == CollisionMode.IGNORE:
                 continue
@@ -504,14 +504,15 @@ class Window3D:
                         for cb in all_cols:
                             if cb is ca or cb.object3d is a:
                                 continue
-                            # Mask filter
-                            if (ca.layer & cb.collision_mask) == 0 or (cb.layer & ca.collision_mask) == 0:
+                            # ColliderGroup: IGNORE skip; TRIGGER detect/pass; SOLID block
+                            relation = ca.group.get_relation(cb.group)
+                            if relation == CollisionRelation.IGNORE:
                                 continue
                             if ca.check_collision(cb):
                                 current_collisions[ca].add(cb)
                                 current_collisions[cb].add(ca)
-                                # Block if mode NORMAL/CONTINUOUS (solid); TRIGGER detect but pass
-                                if ca.collision_mode in (CollisionMode.NORMAL, CollisionMode.CONTINUOUS):
+                                # block only on SOLID (TRIGGER passes)
+                                if relation == CollisionRelation.SOLID:
                                     manifold = get_collision_manifold(ca, cb)
                                     if manifold:
                                         self._resolve_collision(a, cb.object3d, manifold)
@@ -531,17 +532,17 @@ class Window3D:
                 for cb in all_cols:
                     if cb is ca or cb.object3d is a:
                         continue
-                    # Mask filter
-                    if (ca.layer & cb.collision_mask) == 0 or (cb.layer & ca.collision_mask) == 0:
+                    # ColliderGroup relation: IGNORE skip, TRIGGER detect/pass, SOLID block
+                    relation = ca.group.get_relation(cb.group)
+                    if relation == CollisionRelation.IGNORE:
                         continue
                     ca.update_bounds()
                     cb.update_bounds()
                     if objects_collide(ca, cb):
                         current_collisions[ca].add(cb)
                         current_collisions[cb].add(ca)
-                        # Detect; block if mode NORMAL/CONTINUOUS; TRIGGER detect but pass
-                        is_solid = ca.collision_mode in (CollisionMode.NORMAL, CollisionMode.CONTINUOUS)
-                        if is_solid:
+                        # block only on SOLID (Normal can't pass); TRIGGER pass thru
+                        if relation == CollisionRelation.SOLID:
                             manifold = get_collision_manifold(ca, cb)
                             if manifold:
                                 self._resolve_collision(a, cb.object3d, manifold)

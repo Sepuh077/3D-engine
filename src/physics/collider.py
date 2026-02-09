@@ -105,6 +105,9 @@ class Collider(Component):
     def check_collision(self, other: 'Collider') -> bool:
         if other is None or not self.object3d or not other.object3d:
             return False
+        # Use ColliderGroup: IGNORE skips (Trigger=detect/pass, Normal=block)
+        if self.group.get_relation(other.group) == CollisionRelation.IGNORE:
+            return False
         self.update_bounds()
         other.update_bounds()
         from src.physics.collision import objects_collide
