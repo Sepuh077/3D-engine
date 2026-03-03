@@ -673,6 +673,20 @@ def create_cube(size: float = 1.0,
     return obj
 
 
+def create_sphere(radius: float = 1.0, 
+                  subdivisions: int = 2,
+                  position: Tuple[float, float, float] = (0, 0, 0),
+                  color: Optional[ColorType] = None) -> Object3D:
+    """
+    Create a sphere primitive.
+    """
+    obj = Object3D(position=position, color=color)
+    mesh = trimesh.creation.icosphere(subdivisions=subdivisions, radius=radius)
+    obj.mesh = mesh
+    obj._post_process_geometry(f"primitive_sphere_{radius}")
+    return obj
+
+
 def create_plane(width: float = 10.0, 
                  height: float = 10.0,
                  position: Tuple[float, float, float] = (0, 0, 0),

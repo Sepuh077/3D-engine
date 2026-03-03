@@ -23,11 +23,21 @@ Example:
 
 from .window import Window3D
 from .view import View3D
-from .object3d import Object3D
+from .object3d import Object3D, create_cube, create_sphere, create_plane
 from .camera import Camera3D
 from .light import Light3D
 from .keys import Keys
 from .color import Color
+from .particle import (
+    ParticleSystem,
+    ParticleBurst,
+    linear_size_over_lifetime,
+    linear_color_over_lifetime,
+    linear_velocity_over_lifetime,
+    SphereShape,
+    ConeShape,
+    BoxShape,
+)
 
 # Arcade-style global 2D drawing (separate module)
 from .drawing import (
@@ -45,10 +55,21 @@ __all__ = [
     'Window3D',
     'View3D', 
     'Object3D',
+    'create_cube',
+    'create_sphere',
+    'create_plane',
     'Camera3D',
     'Light3D',
     'Keys',
     'Color',
+    'ParticleSystem',
+    'ParticleBurst',
+    'linear_size_over_lifetime',
+    'linear_color_over_lifetime',
+    'linear_velocity_over_lifetime',
+    'SphereShape',
+    'ConeShape',
+    'BoxShape',
     # Global 2D drawing (Arcade-style)
     'get_window',
     'draw_text',

@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.engine3d import Window3D, Object3D, Keys, Color
+from src.engine3d import Window3D, Object3D, Keys, Color, ParticleSystem, ParticleBurst
 
 
 class BasicExample(Window3D):
@@ -38,6 +38,24 @@ class BasicExample(Window3D):
         
         # Movement speed for entity
         self.entity_move_speed = 10.0  # units per second
+
+        # Particle system setup
+        burst = ParticleBurst(interval=1.0, count=12, randomize=True)
+        self.particles = ParticleSystem(
+            position=(0, 2, 0),
+            play_on_awake=True,
+            play_duration=0.0,
+            particle_life=2.0,
+            speed=3.5,
+            size=0.2,
+            particle_object=None,
+            color=Color.CYAN,
+            loop=True,
+            max_particles=120,
+            burst=burst,
+            gravity_scale=0.3,
+        )
+        self.add_particle_system(self.particles)
     
     def on_update(self, delta_time):
         """Called every frame."""
@@ -89,6 +107,13 @@ class BasicExample(Window3D):
             self.stairs.position = (0, 0, 0)
             self.camera.position = (0, 5, 15)
             self.camera.look_at((0, 0, 0))
+        elif key == Keys.P:
+            if self.particles.is_playing:
+                self.particles.stop(clear_particles=True)
+            else:
+                self.particles.play()
+        elif key == Keys.E:
+            self.particles.emit(20)
     
     def on_mouse_scroll(self, x, y, scroll_x, scroll_y):
         """Called when mouse wheel is scrolled."""
@@ -105,6 +130,8 @@ if __name__ == "__main__":
     print("  SPACE - Toggle rotation direction")
     print("  R - Reset position")
     print("  ESC - Exit")
+    print("  P - Toggle particles")
+    print("  E - Emit burst")
     print()
     
     # Create and run the application

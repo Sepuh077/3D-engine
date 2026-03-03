@@ -309,6 +309,9 @@ class Window3D:
         # View system
         self._current_view: Optional['View3D'] = None
         
+        # Particle systems
+        self.particle_systems = []
+        
         # Timing
         self._clock = pygame.time.Clock()
         self._running = False
@@ -584,6 +587,16 @@ class Window3D:
 
     def _active_objects(self) -> List[Object3D]:
         return self._current_view.objects if self._current_view else self.objects
+
+    def add_particle_system(self, system) -> None:
+        """Register a ParticleSystem with this window."""
+        system._attach(self)
+        self.particle_systems.append(system)
+
+    def remove_particle_system(self, system) -> None:
+        """Remove a ParticleSystem from this window."""
+        if system in self.particle_systems:
+            self.particle_systems.remove(system)
 
     def _get_or_create_mesh(self, obj: Object3D) -> Optional[MeshGPU]:
         key = obj.get_mesh_key()
@@ -1484,6 +1497,9 @@ class Window3D:
             if self._current_view:
                 self._current_view.on_update(self._delta_time)
             self.on_update(self._delta_time)
+
+            for system in self.particle_systems:
+                system.update(self._delta_time)
             
             # Auto collision detection + events + resolution (after user update)
             self._process_collisions()

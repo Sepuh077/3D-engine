@@ -40,6 +40,7 @@ class View3D:
         """Initialize the view."""
         self.window: Optional['Window3D'] = None
         self.objects: List[Object3D] = []
+        self.particle_systems = []
         self.camera = Camera3D()
         self.light = Light3D()
         self._setup_done = False
@@ -47,12 +48,17 @@ class View3D:
     def _attach_window(self, window: 'Window3D'):
         """Called when view is attached to a window."""
         self.window = window
+        for system in self.particle_systems:
+            window.add_particle_system(system)
         if not self._setup_done:
             self.setup()
             self._setup_done = True
     
     def _detach_window(self):
         """Called when view is detached from window."""
+        if self.window:
+            for system in self.particle_systems:
+                self.window.remove_particle_system(system)
         self.on_hide()
     
     # =========================================================================
@@ -116,6 +122,19 @@ class View3D:
         Alias for add_object() with a filename.
         """
         return self.add_object(filename, **kwargs)
+
+    def add_particle_system(self, system) -> None:
+        """Register a ParticleSystem with this view."""
+        self.particle_systems.append(system)
+        if self.window:
+            self.window.add_particle_system(system)
+
+    def remove_particle_system(self, system) -> None:
+        """Remove a ParticleSystem from this view."""
+        if system in self.particle_systems:
+            self.particle_systems.remove(system)
+        if self.window:
+            self.window.remove_particle_system(system)
     
     # =========================================================================
     # Lifecycle methods (override these in subclass)
