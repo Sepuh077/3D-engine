@@ -13,27 +13,29 @@ current_file_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_file_dir)
 sys.path.insert(0, project_root)
 
-from src.engine3d import Window3D, Keys, Color
+from src.engine3d import Rigidbody, Window3D, Keys, Color, Component, GameObject
 from src.engine3d.object3d import create_cube, create_plane, Object3D
 from src.physics import CollisionMode, CollisionRelation, BoxCollider, SphereCollider, CapsuleCollider, Collider, ColliderGroup
 
 
-# Player uses custom OnCollision* (now on collider; other is Collider, main obj via .object3d)
-def make_player_callbacks(player):
+# Player uses custom OnCollision* (now on collider; other is Collider, main obj via .game_object)
+def make_player_callbacks(player: GameObject):
     player_coll = player.get_component(Collider)
-    def on_enter(other):
+    def on_enter(other: Collider):
         # other is other Collider; get main object
-        other_obj = other.object3d
-        if hasattr(other_obj, 'color_on_trigger'):
-            other_obj.color = other_obj.color_on_trigger
+        other_obj = other.game_object
+        obj3d = other_obj.get_component(Object3D)
+        if obj3d and hasattr(obj3d, 'color_on_trigger'):
+            obj3d.color = obj3d.color_on_trigger
         print(f"Player entered collision with {other_obj.name or 'obj'}")
-    def on_exit(other):
-        other_obj = other.object3d
-        if hasattr(other_obj, 'color_normal'):
-            other_obj.color = other_obj.color_normal
+    def on_exit(other: Collider):
+        other_obj = other.game_object
+        obj3d = other_obj.get_component(Object3D)
+        if obj3d and hasattr(obj3d, 'color_normal'):
+            obj3d.color = obj3d.color_normal
         print(f"Player exited collision with {other_obj.name or 'obj'}")
-    def on_stay(other):
-        other_obj = other.object3d
+    def on_stay(other: Collider):
+        other_obj = other.game_object
         # Stay only for walls/floor (by name)
         if getattr(other_obj, 'name', '') == "Wall" or getattr(other_obj, 'name', '') == "Floor":
             print(f"Player Stayed ---------------- with {other_obj.name or 'obj'}")
@@ -49,8 +51,8 @@ class CollisionGroupsExample(Window3D):
     def setup(self):
         # Floor (solid with player; add collider separately)
         floor = self.add_object(create_plane(30, 30, color=Color.DARK_GRAY))
-        floor.position = (0, -0.5, 0)
-        floor.static = True
+        floor.transform.position = (0, -0.5, 0)
+        floor.add_component(Rigidbody(is_static=True))
         floor.name = "Floor"
         fcoll = floor.add_component(BoxCollider())
         fcoll.collision_mode = CollisionMode.NORMAL
@@ -72,8 +74,8 @@ class CollisionGroupsExample(Window3D):
         wall_positions = [(-10, 1, 0), (10, 1, 0), (0, 1, -10), (0, 1, 10)]
         for pos in wall_positions:
             wall = self.add_object(create_cube(2.0, color=Color.GRAY))
-            wall.position = pos
-            wall.static = True
+            wall.transform.position = pos
+            wall.add_component(Rigidbody(is_static=True))
             wall.name = "Wall"
             wcoll = wall.add_component(BoxCollider())
             wcoll.collision_mode = CollisionMode.NORMAL
@@ -85,10 +87,10 @@ class CollisionGroupsExample(Window3D):
         trigger_pos = [(-5, 1, 5), (5, 1, 5)]
         for i, pos in enumerate(trigger_pos):
             trig = self.add_object(create_cube(1.5, color=Color.YELLOW))
-            trig.position = pos
+            trig.transform.position = pos
             trig.name = f"Trigger{i}"
-            trig.color_normal = Color.YELLOW
-            trig.color_on_trigger = Color.PURPLE
+            trig.get_component(Object3D).color_normal = Color.YELLOW
+            trig.get_component(Object3D).color_on_trigger = Color.PURPLE
             tcoll = trig.add_component(SphereCollider())
             tcoll.collision_mode = CollisionMode.TRIGGER  # detect but pass
             tcoll.group = trigger_group
@@ -99,7 +101,7 @@ class CollisionGroupsExample(Window3D):
         ignore_pos = [(-5, 1, -5), (5, 1, -5)]
         for i, pos in enumerate(ignore_pos):
             ign = self.add_object(create_cube(1.5, color=Color.ORANGE))
-            ign.position = pos
+            ign.transform.position = pos
             ign.name = f"Ignore{i}"
             icoll = ign.add_component(BoxCollider())
             icoll.collision_mode = CollisionMode.IGNORE
@@ -109,10 +111,11 @@ class CollisionGroupsExample(Window3D):
         # Player (cube collider + mesh; user adds collider separately)
         player_base = create_cube(1.0, color=Color.BLUE)
         self.player = self.add_object(player_base)
-        self.player.scale = 1.0
-        self.player.position = (0, 0.5, 0)
+        self.player.transform.scale = 1.0
+        self.player.transform.position = (0, 0.5, 0)
         self.player.name = "Player"
         self.player.move_speed = 100.0
+        self.player.add_component(Rigidbody())
         # Add collider (mode kept; group sets relations)
         pcoll = self.player.add_component(BoxCollider())
         pcoll.collision_mode = CollisionMode.CONTINUOUS
@@ -160,7 +163,7 @@ class CollisionGroupsExample(Window3D):
         self.collision_count = len(pcoll._current_collisions) if pcoll else 0
         
         # Update caption (mode from collider)
-        pos = self.player.position
+        pos = self.player.transform.position
         pcoll = self.player.get_component(Collider)
         mode_str = str(pcoll.collision_mode).split('.')[-1] if pcoll else "N/A"
         self.set_caption(

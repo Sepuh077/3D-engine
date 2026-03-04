@@ -4,34 +4,23 @@ import numpy as np
 import trimesh
 from typing import Tuple, Optional, List, TYPE_CHECKING
 
-from src.physics import Component, Collider, Rigidbody
+from src.engine3d.component import Component
+from src.engine3d.gameobject import GameObject
 from trimesh.visual.texture import TextureVisuals
-from .color import ColorType, Color
+from .color import ColorType
 
 if TYPE_CHECKING:
     import moderngl
     from .window import Window3D
 
 
-class Object3D:
+class Object3D(Component):
     def __init__(
         self,
         filename: Optional[str] = None,
-        position=(0, 0, 0),
-        scale: float = 1.0,
         color: Optional[ColorType] = None,
     ):
-        # ---------------- Transform ----------------
-        self._position = np.array(position, dtype=np.float32)
-        self._rotation = np.zeros(3, dtype=np.float32)
-        self._scale = np.array([scale, scale, scale], dtype=np.float32)
-
-        self._transform_dirty = True
-
-        # Cached transforms
-        self._cached_rotation = None
-        self._cached_model = None
-        
+        super().__init__()
         # ---------------- Geometry ----------------
         self.mesh: Optional[trimesh.Trimesh] = None
 
@@ -53,11 +42,6 @@ class Object3D:
             c = np.append(c, 1.0)
         self._color = c
         self._visible = True
-        self._static = False
-        self.name = "Object3D"
-        self.tag = None
-        self.velocity = np.zeros(3, dtype=np.float32)
-        self._prev_position = np.copy(self._position)
 
         # GPU handles (initialized later)
         self._vbo = None
@@ -68,16 +52,8 @@ class Object3D:
         self._mesh_key = None
         self._mesh = None
 
-        # Components (user adds Collider/Rigidbody etc separately)
-        self.components: List[Component] = []
-
         if filename:
             self.load(filename)
-
-    # ======================================================================
-    # Loading & geometry preprocessing (ONCE)
-    # ======================================================================
-
     def load(self, filename: str):
         # Load with trimesh for full support including colors
         self._load_with_trimesh(filename)
@@ -218,29 +194,6 @@ class Object3D:
             mesh.visual.vertex_colors = colors
 
     # Dirty flag helper (marks transform dirty + colliders for runtime update)
-    def _mark_dirty(self):
-        self._transform_dirty = True
-        # Mark colliders dirty (for lazy bounds update)
-        for comp in self.components:
-            if isinstance(comp, Collider):
-                comp._transform_dirty = True
-
-    # Component system (add/get like Unity)
-    def add_component(self, component: Component) -> Component:
-        component.object3d = self
-        component.on_attach()
-        self.components.append(component)
-        return component
-
-    def get_component(self, component_type: type) -> Optional[Component]:
-        for comp in self.components:
-            if isinstance(comp, component_type):
-                return comp
-        return None
-
-    def get_components(self, component_type: type) -> List[Component]:
-        return [comp for comp in self.components if isinstance(comp, component_type)]
-
     # =========================================================================
     # Position properties
     # =========================================================================
@@ -260,193 +213,6 @@ class Object3D:
         self._local_max = self.mesh.vertices.max(axis=0)
         self._local_radius = np.linalg.norm(self.mesh.vertices, axis=1).max()
         self._mesh_key = None
-    
-    @property
-    def position(self) -> np.ndarray:
-        """Get position as tuple."""
-        return self._position.copy()
-    
-    @position.setter
-    def position(self, value: Tuple[float, float, float]):
-        """Set position."""
-        self._update_prev_position()
-        self._position = np.array(value, dtype=np.float32)
-        self._mark_dirty()
-    
-    @property
-    def x(self) -> float:
-        return float(self._position[0])
-    
-    @x.setter
-    def x(self, value: float):
-        """Set x."""
-        self.position = (value, self.y, self.z)
-    
-    @property
-    def y(self) -> float:
-        return float(self._position[1])
-    
-    @y.setter
-    def y(self, value: float):
-        """Set y."""
-        self.position = (self.x, value, self.z)
-    
-    @property
-    def z(self) -> float:
-        return float(self._position[2])
-    
-    @z.setter
-    def z(self, value: float):
-        """Set z."""
-        self.position = (self.x, self.y, value)
-
-    # ---------------- Bounds ----------------
-    @property
-    def min_x(self) -> float:
-        """World-space minimum X coordinate."""
-        self._update_cache()
-        return float(self.collider.aabb[0][0])
-
-    @min_x.setter
-    def min_x(self, value: float):
-        self.x += value - self.min_x
-
-    @property
-    def max_x(self) -> float:
-        """World-space maximum X coordinate."""
-        self._update_cache()
-        return float(self.collider.aabb[1][0])
-
-    @max_x.setter
-    def max_x(self, value: float):
-        self.x += value - self.max_x
-
-    @property
-    def min_y(self) -> float:
-        """World-space minimum Y coordinate."""
-        self._update_cache()
-        return float(self.collider.aabb[0][1])
-
-    @min_y.setter
-    def min_y(self, value: float):
-        self.y += value - self.min_y
-
-    @property
-    def max_y(self) -> float:
-        """World-space maximum Y coordinate."""
-        self._update_cache()
-        return float(self.collider.aabb[1][1])
-
-    @max_y.setter
-    def max_y(self, value: float):
-        self.y += value - self.max_y
-
-    @property
-    def min_z(self) -> float:
-        """World-space minimum Z coordinate."""
-        self._update_cache()
-        return float(self.collider.aabb[0][2])
-
-    @min_z.setter
-    def min_z(self, value: float):
-        self.z += value - self.min_z
-
-    @property
-    def max_z(self) -> float:
-        """World-space maximum Z coordinate."""
-        self._update_cache()
-        return float(self.collider.aabb[1][2])
-
-    @max_z.setter
-    def max_z(self, value: float):
-        self.z += value - self.max_z
-    
-    def move(self, dx: float = 0, dy: float = 0, dz: float = 0) -> bool:
-        self._update_prev_position()
-        delta = np.array([dx, dy, dz], dtype=np.float32)
-        self._position += delta
-        self._mark_dirty()
-        self.velocity = delta
-        return True
-
-    def _update_prev_position(self):
-        self._prev_position = np.copy(self._position)
-
-    # =========================================================================
-    # Rotation properties
-    # =========================================================================
-    
-    @property
-    def rotation(self) -> Tuple[float, float, float]:
-        """Get rotation as tuple (degrees)."""
-        return tuple(np.degrees(self._rotation))
-    
-    @rotation.setter
-    def rotation(self, value: Tuple[float, float, float]):
-        """Set rotation (degrees)."""
-        self._rotation = np.radians(value).astype(np.float32)
-        self._mark_dirty()
-    
-    @property
-    def rotation_x(self) -> float:
-        """Rotation around X axis in degrees."""
-        return float(np.degrees(self._rotation[0]))
-    
-    @rotation_x.setter
-    def rotation_x(self, value: float):
-        self._rotation[0] = np.radians(value)
-        self._mark_dirty()
-    
-    @property
-    def rotation_y(self) -> float:
-        """Rotation around Y axis in degrees."""
-        return float(np.degrees(self._rotation[1]))
-    
-    @rotation_y.setter
-    def rotation_y(self, value: float):
-        self._rotation[1] = np.radians(value)
-        self._mark_dirty()
-    
-    @property
-    def rotation_z(self) -> float:
-        """Rotation around Z axis in degrees."""
-        return float(np.degrees(self._rotation[2]))
-    
-    @rotation_z.setter
-    def rotation_z(self, value: float):
-        self._rotation[2] = np.radians(value)
-        self._mark_dirty()
-    
-    def rotate(self, dx: float = 0, dy: float = 0, dz: float = 0):
-        """Rotate object by offset (degrees)."""
-        self._rotation += np.radians([dx, dy, dz]).astype(np.float32)
-        self._mark_dirty()
-    
-    # =========================================================================
-    # Scale properties
-    # =========================================================================
-    
-    @property
-    def scale(self) -> float:
-        """Get uniform scale."""
-        return float(self._scale[0])
-    
-    @scale.setter
-    def scale(self, value: float):
-        """Set uniform scale."""
-        self._scale = np.array([value, value, value], dtype=np.float32)
-        self._mark_dirty()
-    
-    @property
-    def scale_xyz(self) -> Tuple[float, float, float]:
-        """Get non-uniform scale."""
-        return tuple(self._scale)
-    
-    @scale_xyz.setter
-    def scale_xyz(self, value: Tuple[float, float, float]):
-        """Set non-uniform scale."""
-        self._scale = np.array(value, dtype=np.float32)
-        self._mark_dirty()
     
     # =========================================================================
     # Appearance properties
@@ -478,16 +244,6 @@ class Object3D:
         """Set visibility."""
         self._visible = value
 
-    @property
-    def static(self) -> bool:
-        """Is object static? Static objects can be batched/instanced."""
-        return self._static
-
-    @static.setter
-    def static(self, value: bool):
-        """Set static flag."""
-        self._static = bool(value)
-    
     def show(self):
         """Make object visible."""
         self._visible = True
@@ -515,26 +271,7 @@ class Object3D:
     # =========================================================================
     
     def get_model_matrix(self) -> np.ndarray:
-        if not self._transform_dirty:
-            return self._cached_model
-        # Rotation matrix
-        cx, cy, cz = np.cos(self._rotation)
-        sx, sy, sz = np.sin(self._rotation)
-        Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]], dtype=np.float32)
-        Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]], dtype=np.float32)
-        Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]], dtype=np.float32)
-        R = Rx @ Ry @ Rz
-        self._cached_rotation = R
-        # Model
-        sx, sy, sz = self._scale
-        tx, ty, tz = self._position
-        S = np.array([[sx, 0, 0, 0], [0, sy, 0, 0], [0, 0, sz, 0], [0, 0, 0, 1]], dtype=np.float32)
-        R4 = np.eye(4, dtype=np.float32)
-        R4[:3, :3] = R
-        T = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [tx, ty, tz, 1]], dtype=np.float32)
-        self._cached_model = S @ R4 @ T
-        self._transform_dirty = False
-        return self._cached_model
+        return self.game_object.transform.get_model_matrix()
     
     # GPU helper for moderngl rendering
     def _get_flattened_geometry(self):
@@ -615,8 +352,8 @@ class Object3D:
         self._gpu_initialized = False
 
     def _rotation_matrix(self):
-        cx, cy, cz = np.cos(self._rotation)
-        sx, sy, sz = np.sin(self._rotation)
+        cx, cy, cz = np.cos(self.game_object.transform._rotation)
+        sx, sy, sz = np.sin(self.game_object.transform._rotation)
 
         Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]], dtype=np.float32)
         Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]], dtype=np.float32)
@@ -624,7 +361,10 @@ class Object3D:
         return Rx @ Ry @ Rz
 
     def __repr__(self):
-        return f"Object3D(name='{hash(self)}', position={self.position}, scale={self.scale})"
+        return f"Object3D(mesh={self._mesh_key})"
+
+        return f"Object3D(name='{hash(self)}', position={self.game_object.transform.position}, scale={self.game_object.transform.scale})"
+
 
 
 # =============================================================================
@@ -633,21 +373,14 @@ class Object3D:
 
 def create_cube(size: float = 1.0, 
                 position: Tuple[float, float, float] = (0, 0, 0),
-                color: Optional[ColorType] = None) -> Object3D:
-    """
-    Create a cube primitive (add Collider separately if needed).
+                color: Optional[ColorType] = None) -> GameObject:
+    go = GameObject()
+    go.transform.position = position
+    go.transform.scale = size
+    obj = Object3D(color=color)
+    go.add_component(obj)
     
-    Args:
-        size: Cube size
-        position: Cube position
-        color: Cube color
-    
-    Returns:
-        Object3D cube
-    """
-    obj = Object3D(position=position, color=color)
-    
-    s = size / 2
+    s = 1.0 / 2 # Size handled by scale
     vertices = np.array([
         [-s, -s,  s], [ s, -s,  s], [ s,  s,  s], [-s,  s,  s],
         [-s, -s, -s], [-s,  s, -s], [ s,  s, -s], [ s, -s, -s],
@@ -666,46 +399,37 @@ def create_cube(size: float = 1.0,
         [20, 21, 22], [20, 22, 23],
     ], dtype=np.int32)
     
-    # Use trimesh object (default white vertex colors in renderer for tinting)
     obj.mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
-    obj._post_process_geometry(f"primitive_cube_{size}")
+    obj._post_process_geometry(f"primitive_cube_1")
     
-    return obj
-
+    return go
 
 def create_sphere(radius: float = 1.0, 
                   subdivisions: int = 2,
                   position: Tuple[float, float, float] = (0, 0, 0),
-                  color: Optional[ColorType] = None) -> Object3D:
-    """
-    Create a sphere primitive.
-    """
-    obj = Object3D(position=position, color=color)
-    mesh = trimesh.creation.icosphere(subdivisions=subdivisions, radius=radius)
+                  color: Optional[ColorType] = None) -> GameObject:
+    go = GameObject()
+    go.transform.position = position
+    go.transform.scale = radius
+    obj = Object3D(color=color)
+    go.add_component(obj)
+    
+    mesh = trimesh.creation.icosphere(subdivisions=subdivisions, radius=1.0)
     obj.mesh = mesh
-    obj._post_process_geometry(f"primitive_sphere_{radius}")
-    return obj
-
+    obj._post_process_geometry(f"primitive_sphere_1")
+    return go
 
 def create_plane(width: float = 10.0, 
                  height: float = 10.0,
                  position: Tuple[float, float, float] = (0, 0, 0),
-                 color: Optional[ColorType] = None) -> Object3D:
-    """
-    Create a horizontal plane primitive (add Collider separately if needed).
+                 color: Optional[ColorType] = None) -> GameObject:
+    go = GameObject()
+    go.transform.position = position
+    go.transform.scale_xyz = (width, 1.0, height)
+    obj = Object3D(color=color)
+    go.add_component(obj)
     
-    Args:
-        width: Plane width (X axis)
-        height: Plane height (Z axis)
-        position: Plane position
-        color: Plane color
-    
-    Returns:
-        Object3D plane
-    """
-    obj = Object3D(position=position, color=color)
-    
-    w, h = width / 2, height / 2
+    w, h = 1.0 / 2, 1.0 / 2
     vertices = np.array([
         [-w, 0, -h],
         [ w, 0, -h],
@@ -718,9 +442,7 @@ def create_plane(width: float = 10.0,
         [0, 3, 2],
     ], dtype=np.int32)
 
-    # Use trimesh object (default white vertex colors in renderer for tinting)
     obj.mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
-    obj._post_process_geometry(f"primitive_plane_{width}_{height}")
+    obj._post_process_geometry(f"primitive_plane_1_1")
 
-    return obj
- 
+    return go

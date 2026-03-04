@@ -14,7 +14,8 @@ if str(ROOT) not in sys.path:
 
 # Demo Arcade-style globals for 2D drawing + get_window
 from src.engine3d import (
-    Window3D, Keys, Color,
+    Rigidbody, 
+    Window3D, Keys, Color, Object3D,
     draw_text, draw_rectangle, draw_circle, draw_ellipse,
     draw_polygon, draw_line, draw_image, get_window,
 )
@@ -29,19 +30,19 @@ class UIExample(Window3D):
         """Setup 3D scene and 2D UI state."""
         # Floor
         floor = self.add_object(create_plane(20, 20, color=Color.DARK_GRAY))
-        floor.position = (0, 0, 0)
-        floor.static = True
+        floor.transform.position = (0, 0, 0)
+        floor.add_component(Rigidbody(is_static=True))
 
         # Some cubes
         for i in range(8):
             cube = self.add_object(create_cube(1.0, color=Color.random_bright()))
             angle = i * (2 * math.pi / 8)
-            cube.position = (5 * math.cos(angle), 0.5, 5 * math.sin(angle))
+            cube.transform.position = (5 * math.cos(angle), 0.5, 5 * math.sin(angle))
             # collider_type set via component (default CUBE)
 
         # Player cube
         self.player = self.add_object(create_cube(1.0, color=Color.YELLOW))
-        self.player.position = (0, 0.5, 0)
+        self.player.transform.position = (0, 0.5, 0)
         # collider_type set via component (default CUBE)
 
         # Camera
@@ -78,36 +79,36 @@ class UIExample(Window3D):
         # Player movement
         moved = False
         if self.is_key_pressed(Keys.LEFT):
-            self.player.x -= speed
+            self.player.transform.x -= speed
             moved = True
         if self.is_key_pressed(Keys.RIGHT):
-            self.player.x += speed
+            self.player.transform.x += speed
             moved = True
         if self.is_key_pressed(Keys.UP):
-            self.player.z -= speed
+            self.player.transform.z -= speed
             moved = True
         if self.is_key_pressed(Keys.DOWN):
-            self.player.z += speed
+            self.player.transform.z += speed
             moved = True
 
         # Rotate player
         if moved:
-            self.player.rotation_y += 180 * delta_time
+            self.player.transform.rotation_y += 180 * delta_time
 
         # Fake "collect" by distance to cubes (simple demo)
         for obj in self.objects:
             if obj is self.player or not hasattr(obj, 'position'):
                 continue
             dist = math.hypot(
-                obj.position[0] - self.player.position[0],
-                obj.position[2] - self.player.position[2]
+                obj.transform.position[0] - self.player.transform.position[0],
+                obj.transform.position[2] - self.player.transform.position[2]
             )
             if dist < 1.5:
                 self.score += 10
                 # Respawn cube
                 angle = self.time * 2
-                obj.position = (5 * math.cos(angle), 0.5, 5 * math.sin(angle))
-                obj.color = Color.random_bright()
+                obj.transform.position = (5 * math.cos(angle), 0.5, 5 * math.sin(angle))
+                obj.get_component(Object3D).color = Color.random_bright()
 
         # Health drain + regen
         self.health = max(0, min(100, self.health - 5 * delta_time + (1 if moved else 5) * delta_time))
@@ -169,7 +170,7 @@ class UIExample(Window3D):
             self.score = 0
             self.game_over = False
             self.message = "Collect cubes! (arrow keys)"
-            self.player.position = (0, 0.5, 0)
+            self.player.transform.position = (0, 0.5, 0)
 
     def on_mouse_press(self, x, y, button, modifiers):
         """Click to boost health."""

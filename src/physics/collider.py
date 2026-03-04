@@ -1,11 +1,11 @@
 import numpy as np
-from typing import Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING
 from .types import CollisionMode, CollisionRelation
-from .component import Component
+from src.engine3d.component import Component
 from .group import ColliderGroup
 
 if TYPE_CHECKING:
-    from src.engine3d.object3d import Object3D
+    from src.engine3d.gameobject import GameObject
 
 
 class Collider(Component):
@@ -27,7 +27,7 @@ class Collider(Component):
         # Dirty flag (shared transform dirty from Object3D)
         self._transform_dirty = True
 
-    def update(self, sphere, obb, aabb, cylinder, mesh_data=None):
+    def set_bounds_data(self, sphere, obb, aabb, cylinder, mesh_data=None):
         self.sphere = sphere
         self.obb = obb
         self.aabb = aabb
@@ -37,25 +37,27 @@ class Collider(Component):
     # Shared compute (main part used by all subs; called by their update_bounds)
     # Subs override for their specific (only needed calc/params; no unwanted e.g. radius for Box)
     def _compute_shared(self):
-        if not self._transform_dirty or not self.object3d:
+        if not self._transform_dirty or not self.game_object:
             return None
-        obj = self.object3d
-        if obj.mesh is None:
+        obj = self.game_object
+        from src.engine3d.object3d import Object3D
+        obj3d = obj.get_component(Object3D)
+        if not obj3d or obj3d.mesh is None:
             self._transform_dirty = False
             return None
 
         # Shared rotation/extents/center
-        cx, cy, cz = np.cos(obj._rotation)
-        sx, sy, sz = np.sin(obj._rotation)
+        cx, cy, cz = np.cos(obj.transform._rotation)
+        sx, sy, sz = np.sin(obj.transform._rotation)
         Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]], dtype=np.float32)
         Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]], dtype=np.float32)
         Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]], dtype=np.float32)
         R = Rx @ Ry @ Rz
 
-        extents = (obj._local_max - obj._local_min) * 0.5 * obj._scale
-        local_center = (obj._local_min + obj._local_max) * 0.5
-        center_offset = R @ (local_center * obj._scale)
-        base_center = obj._position + center_offset
+        extents = (obj3d._local_max - obj3d._local_min) * 0.5 * obj.transform._scale
+        local_center = (obj3d._local_min + obj3d._local_max) * 0.5
+        center_offset = R @ (local_center * obj.transform._scale)
+        base_center = obj.transform._position + center_offset
         absR = np.abs(R)
         half_extents = absR @ extents
         aabb_dims = half_extents * 2
@@ -65,9 +67,9 @@ class Collider(Component):
         collider_center = base_center + c_offset
 
         # Mesh data if needed
-        if obj.mesh is not None:
-            model = obj.get_model_matrix()
-            mesh_data = (obj.mesh.vertices, obj.mesh.faces, model)
+        if obj3d.mesh is not None:
+            model = obj.transform.get_model_matrix()
+            mesh_data = (obj3d.mesh.vertices, obj3d.mesh.faces, model)
             self.mesh_data = mesh_data
 
         self._transform_dirty = False
@@ -103,7 +105,7 @@ class Collider(Component):
 
     # Collision helpers (moved here; collider-centric)
     def check_collision(self, other: 'Collider') -> bool:
-        if other is None or not self.object3d or not other.object3d:
+        if other is None or not self.game_object or not other.game_object:
             return False
         # Use ColliderGroup: IGNORE skips (Trigger=detect/pass, Normal=block)
         if self.group.get_relation(other.group) == CollisionRelation.IGNORE:
@@ -114,7 +116,7 @@ class Collider(Component):
         return objects_collide(self, other)
 
     def contains_point(self, point, radius=1.0):
-        if not self.object3d:
+        if not self.game_object:
             return False
         self.update_bounds()
         from src.physics.collision import collide_point_with_radius
@@ -173,8 +175,10 @@ class SphereCollider(Collider):
             return
         R, absR, extents, aabb_dims, collider_center = shared
         # Sphere-specific
-        obj = self.object3d
-        radius = obj._local_radius * np.max(np.abs(obj._scale)) * self.radius
+        obj = self.game_object
+        from src.engine3d.object3d import Object3D
+        obj3d = obj.get_component(Object3D)
+        radius = obj3d._local_radius * np.max(np.abs(obj.transform._scale)) * self.radius
         sphere = (collider_center, float(radius))
         # AABB from sphere approx
         aabb = (collider_center - radius, collider_center + radius)
@@ -201,8 +205,10 @@ class CapsuleCollider(Collider):
             return
         R, absR, extents, aabb_dims, collider_center = shared
         # Cylinder-specific
-        obj = self.object3d
-        half_ext = (obj._local_max - obj._local_min) * 0.5 * np.abs(obj._scale)
+        obj = self.game_object
+        from src.engine3d.object3d import Object3D
+        obj3d = obj.get_component(Object3D)
+        half_ext = (obj3d._local_max - obj3d._local_min) * 0.5 * np.abs(obj.transform._scale)
         cyl_radius = float(np.maximum(half_ext[0], half_ext[2])) * self.radius
         half_height = float(half_ext[1]) * self.height
         cylinder = (collider_center, cyl_radius, half_height)

@@ -1,5 +1,5 @@
 from .types import ColliderType, CollisionMode, CollisionRelation
-from .component import Component, Rigidbody
+from src.engine3d.component import Component, Rigidbody
 from .collider import Collider, BoxCollider, SphereCollider, CapsuleCollider  # re-export
 from .group import ColliderGroup
 

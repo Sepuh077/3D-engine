@@ -23,6 +23,8 @@ Example:
 
 from .window import Window3D
 from .view import View3D
+from .gameobject import GameObject
+from .component import Component, Transform, Rigidbody
 from .object3d import Object3D, create_cube, create_sphere, create_plane
 from .camera import Camera3D
 from .light import Light3D
@@ -54,6 +56,10 @@ from .drawing import (
 __all__ = [
     'Window3D',
     'View3D', 
+    'GameObject',
+    'Component',
+    'Transform',
+    'Rigidbody',
     'Object3D',
     'create_cube',
     'create_sphere',

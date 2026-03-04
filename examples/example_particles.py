@@ -7,6 +7,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.engine3d import (
+    Rigidbody,
+    GameObject,
     Window3D, 
     Keys, 
     Color, 
@@ -35,7 +37,7 @@ class ParticleExample(Window3D):
         
         # Ground
         self.ground = create_plane(width=30, height=30, position=(0, -2, 0), color=Color.SAND)
-        self.ground.static = True
+        self.ground.add_component(Rigidbody(is_static=True))
         ground_collider = self.ground.add_component(BoxCollider())
         ground_collider.size = [30, 1, 30]
         self.add_object(self.ground)
@@ -47,7 +49,7 @@ class ParticleExample(Window3D):
         self.velocity_curve = linear_velocity_over_lifetime(6.0, 1.0)
 
         self.collider_template = SphereCollider(radius=0.4)
-        self.collider_template.collision_mode = CollisionMode.NORMAL
+        self.collider_template.collision_mode = CollisionMode.IGNORE
         
         self.shape = SphereShape()
 
@@ -67,7 +69,9 @@ class ParticleExample(Window3D):
             collider=self.collider_template,
             shape=self.shape,
         )
-        self.add_particle_system(self.ps)
+        self.ps_go = GameObject()
+        self.ps_go.add_component(self.ps)
+        self.add_object(self.ps_go)
         
         # UI state
         self.buttons = [
@@ -184,13 +188,14 @@ class ParticleExample(Window3D):
     def rebuild_ps(self):
         # We need to recreate the pool
         old_ps = self.ps
-        self.remove_particle_system(old_ps)
         # Clear objects from old system
         for p in old_ps._particles:
             self.remove_object(p.obj)
             
+        self.remove_object(self.ps_go)
+
         self.ps = ParticleSystem(
-            position=old_ps.position,
+            position=old_ps._position,
             play_on_awake=True,
             particle_life=old_ps.particle_life,
             speed=old_ps.speed,
@@ -200,14 +205,15 @@ class ParticleExample(Window3D):
             size_over_lifetime=self.size_curve,
             color_over_lifetime=self.color_curve,
             velocity_over_lifetime=self.velocity_curve,
-            loop=old_ps.loop,
             max_particles=old_ps.max_particles,
             burst=old_ps.burst,
             gravity_scale=old_ps.gravity_scale,
             collider=old_ps.collider,
             shape=self.shape,
         )
-        self.add_particle_system(self.ps)
+        self.ps_go = GameObject()
+        self.ps_go.add_component(self.ps)
+        self.add_object(self.ps_go)
 
     def on_update(self, dt):
         self.set_caption(f"Particle Test - {self.fps:.1f} FPS - Particles: {sum(1 for p in self.ps._particles if p.active)}")

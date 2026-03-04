@@ -15,12 +15,13 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union, TYPE_CHECKING
 
+from .gameobject import GameObject
 from .object3d import Object3D
 from .camera import Camera3D
 from .light import Light3D
 from .color import Color, ColorType
-from .keys import Keys
 from src.physics import ColliderType, CollisionMode, CollisionRelation, Collider
+from src.engine3d.component import Rigidbody
 
 try:
     import moderngl
@@ -302,15 +303,12 @@ class Window3D:
         self._caption_base = title
         
         # Scene elements
-        self.objects: List[Object3D] = []
+        self.objects: List[GameObject] = []
         self.camera = Camera3D()
         self.light = Light3D()
         
         # View system
         self._current_view: Optional['View3D'] = None
-        
-        # Particle systems
-        self.particle_systems = []
         
         # Timing
         self._clock = pygame.time.Clock()
@@ -360,29 +358,37 @@ class Window3D:
     # Object management
     # =========================================================================
     
-    def add_object(self, obj_or_filename, **kwargs) -> Object3D:
-        """
-        Add a 3D object to the scene.
-        
-        Args:
-            obj_or_filename: Object3D instance or path to OBJ file
-            **kwargs: Passed to Object3D constructor if loading from file
-            
-        Returns:
-            The added Object3D
-        """
-        if isinstance(obj_or_filename, Object3D):
-            obj = obj_or_filename
+    def add_object(self, obj_or_filename, **kwargs) -> GameObject:
+        position = kwargs.pop('position', None)
+        rotation = kwargs.pop('rotation', None)
+        scale = kwargs.pop('scale', None)
+
+        if isinstance(obj_or_filename, GameObject):
+            go = obj_or_filename
+        elif isinstance(obj_or_filename, Object3D):
+            go = GameObject()
+            go.add_component(obj_or_filename)
         else:
-            obj = Object3D(obj_or_filename, **kwargs)
+            go = GameObject()
+            obj3d = Object3D(obj_or_filename, **kwargs)
+            go.add_component(obj3d)
         
-        # Initialize GPU resources
-        self._ensure_mesh(obj)
-        self.objects.append(obj)
+        if position is not None:
+            go.transform.position = position
+        if rotation is not None:
+            go.transform.rotation = rotation
+        if scale is not None:
+            go.transform.scale = scale
         
-        return obj
-    
-    def load_object(self, filename: str, **kwargs) -> Object3D:
+        # Initialize GPU resources for the MeshRenderer part
+        obj3d_comp = go.get_component(Object3D)
+        if obj3d_comp:
+            self._ensure_mesh(obj3d_comp)
+        self.objects.append(go)
+        
+        return go
+
+    def load_object(self, filename: str, **kwargs) -> GameObject:
         """
         Load and add a 3D object from file.
         
@@ -397,72 +403,73 @@ class Window3D:
         """
         return self.add_object(filename, **kwargs)
     
-    def remove_object(self, obj: Object3D):
+    def remove_object(self, obj: GameObject):
         """Remove object from scene."""
         if obj in self.objects:
-            self._release_mesh(obj)
+            if obj.get_component(Object3D): self._release_mesh(obj.get_component(Object3D))
             self.objects.remove(obj)
     
     def clear_objects(self):
         """Remove all objects from scene."""
         for obj in self.objects:
-            self._release_mesh(obj)
+            if obj.get_component(Object3D): self._release_mesh(obj.get_component(Object3D))
         self.objects.clear()
 
-    def move_object(self, obj: Object3D, delta: Tuple[float, float, float]) -> bool:
+    def move_object(self, obj: GameObject, delta: Tuple[float, float, float]) -> bool:
         """
         Move an object by delta.
         """
         # Check first collider's mode (IGNORE skips collision)
         coll = obj.get_component(Collider)
         if coll and coll.collision_mode == CollisionMode.IGNORE:
-            return obj.move(*delta)
-        return obj.move(*delta)
+            return obj.transform.move(*delta)
+        return obj.transform.move(*delta)
 
-    def _resolve_collision(self, a: Object3D, b: Object3D, manifold):
+    def _resolve_collision(self, a: GameObject, b: GameObject, manifold):
         # Minimal depen + velocity project (slide, no jitter/vibrate on wall)
         depth = getattr(manifold, 'depth', 0.0)
         if depth <= 0:
             return
         push = depth + 1e-5
         normal = manifold.normal
-        if a.static and b.static:
+        a_static = a.get_component(Rigidbody) and a.get_component(Rigidbody).is_static
+        b_static = b.get_component(Rigidbody) and b.get_component(Rigidbody).is_static
+        
+        if a_static and b_static:
             return
-        elif a.static:
-            b._position -= normal * push
+        elif a_static:
+            b.transform._position -= normal * push
             # Project b vel: full stop if into, else slide
-            dot = np.dot(b.velocity, normal)
-            if dot < 0:
-                b.velocity = np.zeros(3, dtype=np.float32)  # stay still
-            else:
-                b.velocity -= dot * normal
-            b._mark_dirty()
+            if b.get_component(Rigidbody):
+                dot = np.dot(b.get_component(Rigidbody).velocity, normal)
+                if dot < 0:
+                    b.get_component(Rigidbody).velocity -= dot * normal
+            b.transform._mark_dirty()
             # Update colliders (moved from obj._update_cache)
             for c in b.get_components(Collider):
                 c.update_bounds()
-        elif b.static:
-            a._position += normal * push
+        elif b_static:
+            a.transform._position += normal * push
             # Project a vel: full stop if into, else slide
-            dot = np.dot(a.velocity, normal)
-            if dot < 0:
-                a.velocity = np.zeros(3, dtype=np.float32)  # stay still
-            else:
-                a.velocity -= dot * normal
-            a._mark_dirty()
+            if a.get_component(Rigidbody):
+                dot = np.dot(a.get_component(Rigidbody).velocity, normal)
+                if dot < 0:
+                    a.get_component(Rigidbody).velocity -= dot * normal
+            a.transform._mark_dirty()
             for c in a.get_components(Collider):
                 c.update_bounds()
         else:
-            a._position += normal * (push / 2)
-            b._position -= normal * (push / 2)
+            a.transform._position += normal * (push / 2)
+            b.transform._position -= normal * (push / 2)
             # Project vels: full stop if pushing into, else slide
             for obj in (a, b):
-                dot = np.dot(obj.velocity, normal)
+                if not obj.get_component(Rigidbody):
+                    continue
+                dot = np.dot(obj.get_component(Rigidbody).velocity, normal)
                 if dot < 0:  # trying to move into wall
-                    obj.velocity = np.zeros(3, dtype=np.float32)  # stay still
-                else:
-                    obj.velocity -= dot * normal  # allow slide
-            a._mark_dirty()
-            b._mark_dirty()
+                    obj.get_component(Rigidbody).velocity -= dot * normal  # allow slide
+            a.transform._mark_dirty()
+            b.transform._mark_dirty()
             for c in a.get_components(Collider):
                 c.update_bounds()
             for c in b.get_components(Collider):
@@ -483,29 +490,29 @@ class Window3D:
 
         # Check non-statics vs all (use ColliderGroup for relations; *all* pairs)
         for ca in all_cols:
-            if ca.object3d.static or ca.collision_mode == CollisionMode.IGNORE:
+            if (ca.game_object.get_component(Rigidbody) and ca.game_object.get_component(Rigidbody).is_static) or ca.collision_mode == CollisionMode.IGNORE:
                 continue
             
             perform_final_check = True
 
             # Continuous sweep (per obj of collider)
-            a = ca.object3d
+            a = ca.game_object
             if ca.collision_mode == CollisionMode.CONTINUOUS:
-                delta = a._position - a._prev_position
+                delta = a.transform._position - a.transform._prev_position
                 speed = np.linalg.norm(delta)
                 if speed > 1e-6:
-                    a._position = np.copy(a._prev_position)
-                    a._mark_dirty()
+                    a.transform._position = np.copy(a.transform._prev_position)
+                    a.transform._mark_dirty()
                     steps = max(1, int(speed / 0.1))
                     step = delta / steps
-                    last_safe = np.copy(a._position)
+                    last_safe = np.copy(a.transform._position)
                     
                     for _ in range(steps):
-                        a._position += step
-                        a._mark_dirty()
+                        a.transform._position += step
+                        a.transform._mark_dirty()
                         hit_solid = False
                         for cb in all_cols:
-                            if cb is ca or cb.object3d is a:
+                            if cb is ca or cb.game_object is a:
                                 continue
                             # ColliderGroup: IGNORE skip; TRIGGER detect/pass; SOLID block
                             relation = ca.group.get_relation(cb.group)
@@ -518,22 +525,23 @@ class Window3D:
                                 if relation == CollisionRelation.SOLID:
                                     manifold = get_collision_manifold(ca, cb)
                                     if manifold:
-                                        self._resolve_collision(a, cb.object3d, manifold)
-                                    a.velocity = np.zeros(3, dtype=np.float32)
+                                        self._resolve_collision(a, cb.game_object, manifold)
+                                    if a.get_component(Rigidbody):
+                                        a.get_component(Rigidbody).velocity = np.zeros(3, dtype=np.float32)
                                     hit_solid = True
                                     break
                         if hit_solid:
-                            a._position = np.copy(last_safe)
-                            a._mark_dirty()
+                            a.transform._position = np.copy(last_safe)
+                            a.transform._mark_dirty()
                             break
-                        last_safe = np.copy(a._position)
+                        last_safe = np.copy(a.transform._position)
                     else:
                         perform_final_check = False
             
             # Normal snapshot
             if perform_final_check:
                 for cb in all_cols:
-                    if cb is ca or cb.object3d is a:
+                    if cb is ca or cb.game_object is a:
                         continue
                     # ColliderGroup relation: IGNORE skip, TRIGGER detect/pass, SOLID block
                     relation = ca.group.get_relation(cb.group)
@@ -548,7 +556,7 @@ class Window3D:
                         if relation == CollisionRelation.SOLID:
                             manifold = get_collision_manifold(ca, cb)
                             if manifold:
-                                self._resolve_collision(a, cb.object3d, manifold)
+                                self._resolve_collision(a, cb.game_object, manifold)
         
         # Update collision events (per-collider _current_collisions)
         for c in all_cols:
@@ -564,7 +572,7 @@ class Window3D:
             
         # Update prev for next frame (continuous uses it)
         for obj in self._active_objects():
-            obj._update_prev_position()
+            obj.transform._update_prev_position()
 
     def _update_profiler(self, stats: dict):
         if not self.show_profiler:
@@ -585,18 +593,8 @@ class Window3D:
         )
         self._apply_caption()
 
-    def _active_objects(self) -> List[Object3D]:
+    def _active_objects(self) -> List[GameObject]:
         return self._current_view.objects if self._current_view else self.objects
-
-    def add_particle_system(self, system) -> None:
-        """Register a ParticleSystem with this window."""
-        system._attach(self)
-        self.particle_systems.append(system)
-
-    def remove_particle_system(self, system) -> None:
-        """Remove a ParticleSystem from this window."""
-        if system in self.particle_systems:
-            self.particle_systems.remove(system)
 
     def _get_or_create_mesh(self, obj: Object3D) -> Optional[MeshGPU]:
         key = obj.get_mesh_key()
@@ -686,9 +684,9 @@ class Window3D:
 
         groups = defaultdict(list)
         for obj in self._active_objects():
-            if not obj.visible or not obj.static:
+            if not obj.get_component(Object3D) or not obj.get_component(Object3D)._visible or not (obj.get_component(Rigidbody) and obj.get_component(Rigidbody).is_static):
                 continue
-            key = (obj.get_mesh_key(), tuple(obj._color))
+            key = (obj.get_component(Object3D).get_mesh_key(), tuple(obj.get_component(Object3D)._color))
             groups[key].append(obj)
 
         for (_, color), objs in groups.items():
@@ -698,12 +696,12 @@ class Window3D:
             uvs_list = []
 
             for obj in objs:
-                flat_vertices, flat_normals, flat_colors, flat_uvs = obj._get_flattened_geometry()
+                flat_vertices, flat_normals, flat_colors, flat_uvs = obj.get_component(Object3D)._get_flattened_geometry()
                 
                 if flat_vertices is None:
                     continue
 
-                model = obj.get_model_matrix()
+                model = obj.transform.get_model_matrix()
                 
                 ones = np.ones((len(flat_vertices), 1), dtype=np.float32)
                 v_h = np.hstack([flat_vertices, ones])
@@ -802,8 +800,9 @@ class Window3D:
         
         # Initialize GPU for view's objects
         for obj in view.objects:
-            if not obj._gpu_initialized:
-                self._ensure_mesh(obj)
+            obj3d = obj.get_component(Object3D)
+            if obj3d and not obj3d._gpu_initialized:
+                self._ensure_mesh(obj3d)
         
         view.on_show()
     
@@ -1159,7 +1158,7 @@ class Window3D:
             [(vbo, '3f', 'in_position')]
         )
 
-    def draw_collider(self, obj: Object3D, color=(0, 1, 0), line_width=1.0):
+    def draw_collider(self, obj: GameObject, color=(0, 1, 0), line_width=1.0):
         camera = self._current_view.camera if self._current_view else self.camera
         view = camera.get_view_matrix()
         proj = camera.get_projection_matrix(self.aspect)
@@ -1303,58 +1302,54 @@ class Window3D:
         transparent_objects = []
 
         for obj in objects:
-            if not obj.visible:
+            obj3d = obj.get_component(Object3D)
+            if not obj3d or not obj3d._visible:
                 continue
-            self._ensure_mesh(obj)
+            self._ensure_mesh(obj3d)
             
             # Transparency check
             is_transparent = False
-            if len(obj._color) == 4 and obj._color[3] < 0.99:
+            if len(obj3d._color) == 4 and obj3d._color[3] < 0.99:
                 is_transparent = True
             
             if is_transparent:
-                transparent_objects.append(obj)
+                transparent_objects.append((obj, obj3d))
             else:
-                opaque_objects.append(obj)
+                opaque_objects.append((obj, obj3d))
 
         # Sort transparent objects back-to-front
         if transparent_objects:
             cam_pos = camera.position
-            transparent_objects.sort(key=lambda o: -np.linalg.norm(o.position - cam_pos))
+            transparent_objects.sort(key=lambda item: -np.linalg.norm(item[0].transform.position - cam_pos))
 
         # ------------------------------------------------------------
         # Draw Helper
         # ------------------------------------------------------------
         def draw_objects(obj_list):
-            for obj in obj_list:
-                mesh = obj._mesh
-                model = obj.get_model_matrix()
+            for go, obj3d in obj_list:
+                mesh = obj3d._mesh
+                model = go.transform.get_model_matrix()
                 mvp = model @ view @ projection
 
                 self._program['mvp'].write(mvp.astype(np.float32).tobytes())
                 self._program['model'].write(model.astype(np.float32).tobytes())
 
-                # Texture path for GLTF etc (check on obj)
                 use_texture = False
-                if getattr(obj, "_uses_texture", False):
-                    # Create GL texture once
-                    if not hasattr(obj, "_gl_texture"):
-                        tex_img = (obj._texture_image * 255).astype(np.uint8)
+                if getattr(obj3d, "_uses_texture", False):
+                    if not hasattr(obj3d, "_gl_texture"):
+                        tex_img = (obj3d._texture_image * 255).astype(np.uint8)
                         h, w = tex_img.shape[:2]
                         tex = self._ctx.texture((w, h), 4, tex_img.tobytes())
                         tex.build_mipmaps()
-                        obj._gl_texture = tex
+                        obj3d._gl_texture = tex
 
-                    obj._gl_texture.use(location=0)
+                    obj3d._gl_texture.use(location=0)
                     self._program['tex'].value = 0
                     use_texture = True
 
                 self._program['use_texture'].value = use_texture
 
-                # ============================================================
-                # VERTEX COLOR / BASE COLOR PATH
-                # ============================================================
-                color = tuple(obj._color)
+                color = tuple(obj3d._color)
                 rgba = color if len(color) == 4 else (*color, 1.0)
                 self._program['base_color'].value = rgba
 
@@ -1362,7 +1357,7 @@ class Window3D:
                     vao = mesh.vao
                     count = mesh.vertex_count
                 else:
-                    vao = obj._vao
+                    vao = obj3d._vao
                     count = None
 
                 if count:
@@ -1498,10 +1493,10 @@ class Window3D:
                 self._current_view.on_update(self._delta_time)
             self.on_update(self._delta_time)
 
-            for system in self.particle_systems:
-                system.update(self._delta_time)
-            
-            # Auto collision detection + events + resolution (after user update)
+            for obj in self._active_objects():
+                obj.update(self._delta_time)
+
+            # Auto collision detection + events + resolution (after user update)            
             self._process_collisions()
             
             # Render
@@ -1521,11 +1516,11 @@ class Window3D:
         """Release all resources."""
         # Release GPU resources
         for obj in self.objects:
-            obj._release_gpu()
+            if obj.get_component(Object3D): obj.get_component(Object3D)._release_gpu()
         
         if self._current_view:
             for obj in self._current_view.objects:
-                obj._release_gpu()
+                if obj.get_component(Object3D): obj.get_component(Object3D)._release_gpu()
         
         # Release 2D overlay resources
         if hasattr(self, '_2d_texture'):

@@ -4,6 +4,7 @@ Similar to arcade.View.
 """
 from typing import List, Optional, Tuple, Union, TYPE_CHECKING
 
+from .gameobject import GameObject
 from .object3d import Object3D
 from .camera import Camera3D
 from .light import Light3D
@@ -39,8 +40,7 @@ class View3D:
     def __init__(self):
         """Initialize the view."""
         self.window: Optional['Window3D'] = None
-        self.objects: List[Object3D] = []
-        self.particle_systems = []
+        self.objects: List[GameObject] = []
         self.camera = Camera3D()
         self.light = Light3D()
         self._setup_done = False
@@ -48,74 +48,77 @@ class View3D:
     def _attach_window(self, window: 'Window3D'):
         """Called when view is attached to a window."""
         self.window = window
-        for system in self.particle_systems:
-            window.add_particle_system(system)
         if not self._setup_done:
             self.setup()
             self._setup_done = True
     
     def _detach_window(self):
         """Called when view is detached from window."""
-        if self.window:
-            for system in self.particle_systems:
-                self.window.remove_particle_system(system)
         self.on_hide()
     
     # =========================================================================
     # Object management
     # =========================================================================
     
-    def add_object(self, obj_or_filename, **kwargs) -> Object3D:
-        """
-        Add a 3D object to the scene.
-        
-        Args:
-            obj_or_filename: Object3D instance or path to OBJ file
-            **kwargs: Passed to Object3D constructor if loading from file
-            
-        Returns:
-            The added Object3D
-        """
-        if isinstance(obj_or_filename, Object3D):
-            obj = obj_or_filename
+    def add_object(self, obj_or_filename, **kwargs) -> GameObject:
+        position = kwargs.pop('position', None)
+        rotation = kwargs.pop('rotation', None)
+        scale = kwargs.pop('scale', None)
+
+        if isinstance(obj_or_filename, GameObject):
+            go = obj_or_filename
+        elif isinstance(obj_or_filename, Object3D):
+            go = GameObject()
+            go.add_component(obj_or_filename)
         else:
-            obj = Object3D(obj_or_filename, **kwargs)
+            go = GameObject()
+            obj3d = Object3D(obj_or_filename, **kwargs)
+            go.add_component(obj3d)
         
-        self.objects.append(obj)
+        if position is not None:
+            go.transform.position = position
+        if rotation is not None:
+            go.transform.rotation = rotation
+        if scale is not None:
+            go.transform.scale = scale
+            
+        self.objects.append(go)
         
         # Initialize GPU if window is available
         if self.window and self.window._ctx:
-            self.window._ensure_mesh(obj)
+            obj3d_comp = go.get_component(Object3D)
+            if obj3d_comp:
+                self.window._ensure_mesh(obj3d_comp)
         
-        return obj
+        return go
     
-    def remove_object(self, obj: Object3D):
+    def remove_object(self, obj: GameObject):
         """Remove object from scene."""
         if obj in self.objects:
             if self.window:
-                self.window._release_mesh(obj)
+                if obj.get_component(Object3D): self.window._release_mesh(obj.get_component(Object3D))
             else:
-                obj._release_gpu()
+                if obj.get_component(Object3D): obj.get_component(Object3D)._release_gpu()
             self.objects.remove(obj)
     
     def clear_objects(self):
         """Remove all objects from scene."""
         for obj in self.objects:
             if self.window:
-                self.window._release_mesh(obj)
+                if obj.get_component(Object3D): self.window._release_mesh(obj.get_component(Object3D))
             else:
-                obj._release_gpu()
+                if obj.get_component(Object3D): obj.get_component(Object3D)._release_gpu()
         self.objects.clear()
     
-    def get_objects_by_name(self, name: str) -> List[Object3D]:
+    def get_objects_by_name(self, name: str) -> List[GameObject]:
         """Get all objects with a specific name."""
         return [obj for obj in self.objects if obj.name == name]
     
-    def get_objects_by_tag(self, tag: str) -> List[Object3D]:
+    def get_objects_by_tag(self, tag: str) -> List[GameObject]:
         """Get all objects with a specific tag."""
         return [obj for obj in self.objects if obj.tag == tag]
     
-    def load_object(self, filename: str, **kwargs) -> Object3D:
+    def load_object(self, filename: str, **kwargs) -> GameObject:
         """
         Load and add a 3D object from file.
         
@@ -123,19 +126,6 @@ class View3D:
         """
         return self.add_object(filename, **kwargs)
 
-    def add_particle_system(self, system) -> None:
-        """Register a ParticleSystem with this view."""
-        self.particle_systems.append(system)
-        if self.window:
-            self.window.add_particle_system(system)
-
-    def remove_particle_system(self, system) -> None:
-        """Remove a ParticleSystem from this view."""
-        if system in self.particle_systems:
-            self.particle_systems.remove(system)
-        if self.window:
-            self.window.remove_particle_system(system)
-    
     # =========================================================================
     # Lifecycle methods (override these in subclass)
     # =========================================================================

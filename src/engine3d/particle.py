@@ -4,17 +4,19 @@ Particle system implementation inspired by Unity-style emitters.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Union
+from typing import Callable, List, Optional, Union, Tuple
 import random
 
 import numpy as np
 
 from src.physics import BoxCollider, SphereCollider, CollisionMode, Collider
 from .color import ColorType
-from .object3d import Object3D, create_cube
+from .gameobject import GameObject
+from .object3d import create_cube, Object3D
+from .component import Component
 
 
-ParticleObject = Union[str, Object3D, Callable[[], Object3D]]
+ParticleObject = Union[str, GameObject, Callable[[], GameObject]]
 LifetimeFloat = Callable[[float], float]
 LifetimeColor = Callable[[float], ColorType]
 LifetimeVelocity = Callable[[float], Union[float, np.ndarray, tuple, list]]
@@ -32,7 +34,7 @@ class ParticleBurst:
 class Particle:
     """Internal particle instance."""
 
-    def __init__(self, obj: Object3D):
+    def __init__(self, obj: GameObject):
         self.obj = obj
         self.velocity = np.zeros(3, dtype=np.float32)
         self.life = 1.0
@@ -181,8 +183,8 @@ def linear_velocity_over_lifetime(start: float, end: float) -> LifetimeVelocity:
     return _curve
 
 
-class ParticleSystem:
-    """Unity-style particle system with pooled Object3D particles."""
+class ParticleSystem(Component):
+    """Unity-style particle system with pooled GameObject particles."""
 
     def __init__(
         self,
@@ -204,6 +206,7 @@ class ParticleSystem:
         collider: Optional[Collider] = None,
         shape: Optional[ParticleShape] = None,
     ):
+        super().__init__()
         self._position = np.array(position, dtype=np.float32)
         self.play_on_awake = play_on_awake
         self.play_duration = float(play_duration)
@@ -241,8 +244,10 @@ class ParticleSystem:
     def is_playing(self) -> bool:
         return self._playing
 
-    def _attach(self, container) -> None:
-        self._container = container
+    def on_attach(self) -> None:
+        from .drawing import get_window
+        window = get_window()
+        self._container = window.current_view if window and window.current_view else window
         self._build_pool()
         if self.play_on_awake:
             self.play()
@@ -255,40 +260,51 @@ class ParticleSystem:
 
         for _ in range(self.max_particles):
             obj = self._create_particle_object()
-            obj.visible = False
+            obj.get_component(Object3D).visible = False
             if self.collider is not None:
                 self._attach_collider(obj)
             self._container.add_object(obj)
             self._particles.append(Particle(obj))
 
-    def _create_particle_object(self) -> Object3D:
+    def _create_particle_object(self) -> GameObject:
         if self.particle_object is None:
             obj = create_cube(size=1.0)
-        elif isinstance(self.particle_object, Object3D):
+        elif isinstance(self.particle_object, GameObject):
             obj = self._clone_object(self.particle_object)
         elif isinstance(self.particle_object, str):
-            obj = Object3D(self.particle_object)
+            obj = GameObject()
+            obj.add_component(Object3D(self.particle_object))
         elif callable(self.particle_object):
             obj = self.particle_object()
         else:
             raise ValueError("Unsupported particle_object type")
 
-        obj.scale = self.size
+        obj.transform.scale = self.size
         if self.color is not None:
-            obj.color = self.color
+            obj3d = obj.get_component(Object3D)
+            if obj3d:
+                obj3d.color = self.color
         return obj
 
-    def _clone_object(self, template: Object3D) -> Object3D:
-        obj = Object3D(position=template.position, scale=template.scale, color=template.color)
-        obj.mesh = template.mesh
-        obj._mesh_key = template.get_mesh_key()
-        obj._uses_texture = getattr(template, "_uses_texture", False)
-        obj._texture_image = getattr(template, "_texture_image", None)
-        obj._uv = getattr(template, "_uv", None)
-        obj._transform_dirty = True
+    def _clone_object(self, template: GameObject) -> GameObject:
+        obj = GameObject()
+        obj.transform.position = template.transform.position
+        obj.transform.scale = template.transform.scale
+        
+        template_obj3d = template.get_component(Object3D)
+        if template_obj3d:
+            new_obj3d = Object3D(color=template_obj3d.color)
+            new_obj3d.mesh = template_obj3d.mesh
+            new_obj3d._mesh_key = template_obj3d.get_mesh_key()
+            new_obj3d._uses_texture = getattr(template_obj3d, "_uses_texture", False)
+            new_obj3d._texture_image = getattr(template_obj3d, "_texture_image", None)
+            new_obj3d._uv = getattr(template_obj3d, "_uv", None)
+            new_obj3d._visible = template_obj3d._visible
+            obj.add_component(new_obj3d)
+        
         return obj
 
-    def _attach_collider(self, obj: Object3D) -> Collider:
+    def _attach_collider(self, obj: GameObject) -> Collider:
         template = self.collider
         if template is None:
             raise RuntimeError("ParticleSystem collider template is missing.")
@@ -367,16 +383,16 @@ class ParticleSystem:
                 else:
                     particle.velocity = np.array(vel_value, dtype=np.float32)
 
-            new_pos = particle.obj.position + particle.velocity * delta_time
+            new_pos = particle.obj.transform.position + particle.velocity * delta_time
             if self.collider is not None:
                 self._move_with_collisions(particle, new_pos)
             else:
-                particle.obj.position = new_pos
+                particle.obj.transform.position = new_pos
 
             if self.size_over_lifetime is not None:
-                particle.obj.scale = float(self.size_over_lifetime(life_ratio))
+                particle.obj.transform.scale = float(self.size_over_lifetime(life_ratio))
             if self.color_over_lifetime is not None:
-                particle.obj.color = self.color_over_lifetime(life_ratio)
+                particle.obj.get_component(Object3D).color = self.color_over_lifetime(life_ratio)
 
     def _get_inactive_particle(self) -> Optional[Particle]:
         for particle in self._particles:
@@ -392,15 +408,15 @@ class ParticleSystem:
         spawn_pos, spawn_dir = self.shape.get_spawn_pos_and_dir(self._position, self._rng)
         particle.velocity = spawn_dir * self.speed
 
-        particle.obj.visible = True
-        particle.obj.position = spawn_pos
-        particle.obj.scale = self.size
+        particle.obj.get_component(Object3D).visible = True
+        particle.obj.transform.position = spawn_pos
+        particle.obj.transform.scale = self.size
         if self.color is not None:
-            particle.obj.color = self.color
+            particle.obj.get_component(Object3D).color = self.color
         if self.size_over_lifetime is not None:
-            particle.obj.scale = float(self.size_over_lifetime(0.0))
+            particle.obj.transform.scale = float(self.size_over_lifetime(0.0))
         if self.color_over_lifetime is not None:
-            particle.obj.color = self.color_over_lifetime(0.0)
+            particle.obj.get_component(Object3D).color = self.color_over_lifetime(0.0)
         if self.velocity_over_lifetime is not None:
             vel_value = self.velocity_over_lifetime(0.0)
             if isinstance(vel_value, (float, int, np.floating, np.integer)):
@@ -410,7 +426,7 @@ class ParticleSystem:
 
     def _deactivate(self, particle: Particle) -> None:
         particle.active = False
-        particle.obj.visible = False
+        particle.obj.get_component(Object3D).visible = False
 
     def _normalize_velocity(self, velocity: np.ndarray) -> np.ndarray:
         norm = np.linalg.norm(velocity)
@@ -422,19 +438,14 @@ class ParticleSystem:
         obj = particle.obj
         colliders = obj.get_components(Collider)
         if not colliders:
-            obj.position = target_pos
+            obj.transform.position = target_pos
             return
 
         collider = colliders[0]
-        delta = target_pos - obj.position
-        if self._container:
-            self._container.move_object(obj, delta)
-        else:
-            obj.position = target_pos
+        obj.transform.position = target_pos
 
         if collider.collision_mode == CollisionMode.IGNORE:
-            obj.position = target_pos
             return
 
-        if np.linalg.norm(obj.position - target_pos) > 1e-6:
+        if collider._current_collisions:
             particle.velocity = np.zeros(3, dtype=np.float32)

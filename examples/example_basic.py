@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.engine3d import Window3D, Object3D, Keys, Color, ParticleSystem, ParticleBurst
+from src.engine3d import Window3D, GameObject, Keys, Color, ParticleSystem, ParticleBurst
 
 
 class BasicExample(Window3D):
@@ -55,27 +55,29 @@ class BasicExample(Window3D):
             burst=burst,
             gravity_scale=0.3,
         )
-        self.add_particle_system(self.particles)
+        ps_go = GameObject()
+        ps_go.add_component(self.particles)
+        self.add_object(ps_go)
     
     def on_update(self, delta_time):
         """Called every frame."""
         # Rotate the object
-        self.stairs.rotation_y += self.rotation_speed * delta_time
+        self.stairs.transform.rotation_y += self.rotation_speed * delta_time
         
         # Entity movement with arrow keys
         move_speed = self.entity_move_speed * delta_time
         
         # Left/Right arrows: move horizontally (X-axis)
         if self.is_key_pressed(Keys.LEFT):
-            self.stairs.x -= move_speed
+            self.stairs.transform.x -= move_speed
         if self.is_key_pressed(Keys.RIGHT):
-            self.stairs.x += move_speed
+            self.stairs.transform.x += move_speed
         
         # Up/Down arrows: move in Z-axis
         if self.is_key_pressed(Keys.UP):
-            self.stairs.z -= move_speed
+            self.stairs.transform.z -= move_speed
         if self.is_key_pressed(Keys.DOWN):
-            self.stairs.z += move_speed
+            self.stairs.transform.z += move_speed
         
         # Camera orbit with A/D keys
         if self.is_key_pressed(Keys.A):
@@ -90,7 +92,7 @@ class BasicExample(Window3D):
             self.camera.zoom(move_speed)
         
         # Update window title with position info
-        pos = self.stairs.position
+        pos = self.stairs.transform.position
         self.set_caption(
             f"Engine3D - Pos: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}) - {self.fps:.0f} FPS"
         )
@@ -104,7 +106,7 @@ class BasicExample(Window3D):
             self.rotation_speed = -self.rotation_speed
         elif key == Keys.R:
             # Reset object position and camera
-            self.stairs.position = (0, 0, 0)
+            self.stairs.transform.position = (0, 0, 0)
             self.camera.position = (0, 5, 15)
             self.camera.look_at((0, 0, 0))
         elif key == Keys.P:

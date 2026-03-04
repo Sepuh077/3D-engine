@@ -92,7 +92,7 @@ class ManyObjectsExample(Window3D):
         
         # Rotate each object at slightly different speed
         for i, obj in enumerate(self.objects):
-            obj.rotation_y = self.time * 30 + i * 10
+            obj.transform.rotation_y = self.time * 30 + i * 10
         
         # Camera orbit with A/D
         if self.is_key_pressed(Keys.A):
@@ -124,7 +124,7 @@ class ManyObjectsExample(Window3D):
             for obj in self.objects:
                 # Parse original position from tag
                 x, y, z = map(float, obj.tag.split(','))
-                obj.position = (x, y, z)
+                obj.transform.position = (x, y, z)
     
     def on_mouse_scroll(self, x, y, scroll_x, scroll_y):
         self.camera.zoom(-scroll_y * 3)

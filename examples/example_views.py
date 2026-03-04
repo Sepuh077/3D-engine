@@ -21,7 +21,7 @@ class MenuView(View3D):
         
         # Create some cubes as menu decoration
         self.title_cube = self.add_object(create_cube(2.0, color=Color.BLUE))
-        self.title_cube.position = (0, 2, 0)
+        self.title_cube.transform.position = (0, 2, 0)
         
         # Camera looking at scene
         self.camera.position = (0, 5, 15)
@@ -32,7 +32,7 @@ class MenuView(View3D):
     def on_update(self, delta_time):
         self.time += delta_time
         # Gentle rotation
-        self.title_cube.rotation_y = self.time * 20
+        self.title_cube.transform.rotation_y = self.time * 20
         self.title_cube.y = 2 + 0.5 * (1 + __import__('math').sin(self.time * 2))
     
     def on_key_press(self, key, modifiers):
@@ -61,7 +61,7 @@ class GameView(View3D):
         # Create some environment objects
         for i in range(5):
             cube = self.add_object(create_cube(1.0, color=Color.GREEN))
-            cube.position = (-8 + i * 4, 0, -5)
+            cube.transform.position = (-8 + i * 4, 0, -5)
             cube.tag = "obstacle"
         
         # Camera
@@ -92,16 +92,16 @@ class GameView(View3D):
             self.player.x += speed
         
         # Rotate player
-        self.player.rotation_y += delta_time * 30
+        self.player.transform.rotation_y += delta_time * 30
         
         # Camera follows player
-        px, py, pz = self.player.position
+        px, py, pz = self.player.transform.position
         self.camera.target = (px, py, pz)
         self.camera.position = (px, py + 10, pz + 20)
         
         # Rotate obstacles
         for obj in self.get_objects_by_tag("obstacle"):
-            obj.rotation_y += delta_time * 50
+            obj.transform.rotation_y += delta_time * 50
     
     def on_key_press(self, key, modifiers):
         if key == Keys.ESCAPE:

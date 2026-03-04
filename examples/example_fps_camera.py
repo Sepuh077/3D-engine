@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
 
 import random
 
-from src.engine3d import Window3D, Keys, Color
+from src.engine3d import Rigidbody, Window3D, Keys, Color
 from src.engine3d.object3d import create_cube, create_plane
 from src.physics import BoxCollider, SphereCollider, CapsuleCollider, Collider
 
@@ -24,9 +24,10 @@ class FPSCameraExample(Window3D):
     def setup(self):
         # Create a floor
         floor = self.add_object(create_plane(50, 50, color=Color.DARK_GRAY))
-        floor.position = (0, 0, 0)
-        floor.static = True
+        floor.transform.position = (0, 0, 0)
+        floor.add_component(Rigidbody(is_static=True))
         collider_classes = [BoxCollider, SphereCollider, CapsuleCollider]
+        self.dc = True
         
         # Create some objects to look at (user adds collider)
         for x in range(-40, 41, 4):
@@ -35,20 +36,20 @@ class FPSCameraExample(Window3D):
                     continue
                 cube = self.add_object(create_cube(1.0, color=Color.random_bright()))
                 if random.random() < 0.5:
-                    cube.static = True
-                cube.position = (x, 0.5, z)
+                    cube.add_component(Rigidbody(is_static=True))
+                cube.transform.position = (x, 0.5, z)
                 cube.add_component(random.choice(collider_classes)())
         
         # Create taller pillars
         for i in range(4):
             pillar = self.add_object(create_cube(2.0, color=Color.BLUE))
             angle = i * math.pi / 2
-            pillar.position = (
+            pillar.transform.position = (
                 15 * math.cos(angle),
                 2,
                 15 * math.sin(angle)
             )
-            pillar.scale_xyz = (2, 4, 2)
+            pillar.transform.scale_xyz = (2, 4, 2)
             pillar.add_component(random.choice(collider_classes)())
         
         # Load the stairs model
@@ -65,7 +66,6 @@ class FPSCameraExample(Window3D):
         self.camera.look_at((0, 2, 0))
         self.camera_obj = create_cube(1, self.camera.position)
         self.camera_obj.add_component(SphereCollider())
-        self.camera_obj.impassable_objects.append(floor)
         
         # Mouse look settings
         self.mouse_sensitivity = 0.002
@@ -96,14 +96,14 @@ class FPSCameraExample(Window3D):
         if self.is_key_pressed(Keys.LSHIFT):
             self.camera.move_up(-speed)
 
-        self.camera_obj.position = self.camera.position
+        self.camera_obj.transform.position = self.camera.position
         
         # Rotate all cubes
         for obj in self.objects:
-            if not obj.static:
-                obj.rotation_y += delta_time * 20
-                obj.rotation_x += delta_time * 10
-                obj.rotation_z += delta_time * 5
+            if not obj.get_component(Rigidbody) or not obj.get_component(Rigidbody).is_static:
+                obj.transform.rotation_y += delta_time * 20
+                obj.transform.rotation_x += delta_time * 10
+                obj.transform.rotation_z += delta_time * 5
             # Check via colliders
             ocoll = obj.get_component(Collider)
             ccoll = self.camera_obj.get_component(Collider)
@@ -139,6 +139,9 @@ class FPSCameraExample(Window3D):
         )
     
     def on_key_press(self, key, modifiers):
+        if key == Keys.SPACE:
+            self.dc = not self.dc
+
         if key == Keys.ESCAPE:
             import pygame
             pygame.mouse.set_visible(True)
@@ -146,6 +149,8 @@ class FPSCameraExample(Window3D):
             self.close()
 
     def on_draw(self):
+        if not self.dc:
+            return
         for obj in self.objects:
             self.draw_collider(obj, color=(0, 1, 0))
 

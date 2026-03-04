@@ -14,7 +14,7 @@ current_file_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_file_dir)
 sys.path.insert(0, project_root)
 
-from src.engine3d import Window3D, Keys, Color
+from src.engine3d import Rigidbody, Window3D, Keys, Color
 from src.engine3d.object3d import create_cube, create_plane
 from src.physics import BoxCollider, SphereCollider, Collider
 
@@ -26,8 +26,8 @@ class CollisionExample(Window3D):
         """Called once at startup."""
         # Create some static obstacles
         floor = self.add_object(create_plane(50, 50, color=Color.DARK_GRAY))
-        floor.position = (0, 0, 0)
-        floor.static = True
+        floor.transform.position = (0, 0, 0)
+        floor.add_component(Rigidbody(is_static=True))
         floor.add_component(BoxCollider())  # user adds
 
         self.obstacles = []
@@ -41,23 +41,21 @@ class CollisionExample(Window3D):
         colliders = [BoxCollider, BoxCollider, SphereCollider, SphereCollider]
         for i in range(4):
             obs = self.add_object(create_cube(2.0, color=Color.GREEN))
-            obs.position = positions[i]
+            obs.transform.position = positions[i]
             obs.add_component(colliders[i]())  # user adds
             self.obstacles.append(obs)
 
         # Create a moving player object (sphere collider for testing sphere-sphere)
         self.player = self.add_object(create_cube(1.0, color=Color.BLUE))
-        self.player.position = (0, 0.5, 0)
+        self.player.transform.position = (0, 0.5, 0)
         self.player.add_component(SphereCollider())  # user adds
-        self.player.impassable_objects.extend(self.obstacles)
-        self.player.impassable_objects.append(floor)
 
         # Create some moving enemies (use stairs OBJ for reliability; GLTF needs .bin)
         self.enemies = []
-        obj_path = r"D:\workspace\3d-game-engine\assets\glTF\Bush_Common_Flowers.gltf"
+        obj_path = "example/stairs_modular_right.obj"
         for i in range(2):
             enemy = self.add_object(obj_path, scale=1, color=Color.RED)  # color tints if no vertex colors
-            enemy.position = (-3 + i * 6, 0.75, -3 + i * 6)
+            enemy.transform.position = (-3 + i * 6, 0.75, -3 + i * 6)
             enemy.speed = 2.0 + i * 0.5  # Slower movement for visibility
             self.enemies.append(enemy)
 
@@ -123,7 +121,7 @@ class CollisionExample(Window3D):
             self.move_object(self.player, (dx, dy, dz))
 
         # Update window title
-        pos = self.player.position
+        pos = self.player.transform.position
         self.set_caption(
             f"Collision Demo - Pos: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}) - "
             f"BBoxes: {'ON' if self.show_bounding_boxes else 'OFF'} - {self.fps:.0f} FPS"
@@ -138,7 +136,7 @@ class CollisionExample(Window3D):
             self.show_bounding_boxes = not self.show_bounding_boxes
         elif key == Keys.R:
             # Reset player position
-            self.player.position = (0, 0.5, 0)
+            self.player.transform.position = (0, 0.5, 0)
 
     def on_draw(self):
         if self.show_bounding_boxes:
