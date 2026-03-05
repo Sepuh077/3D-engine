@@ -29,7 +29,7 @@ from .transform import Transform
 from src.physics.rigidbody import Rigidbody
 from .object3d import Object3D, create_cube, create_sphere, create_plane
 from .camera import Camera3D
-from .light import Light3D
+from .light import Light3D, PointLight3D
 from .input.keys import Keys
 from .graphics.color import Color
 from .particle import (
@@ -72,6 +72,7 @@ __all__ = [
     'create_plane',
     'Camera3D',
     'Light3D',
+    'PointLight3D',
     'Keys',
     'Color',
     'ParticleSystem',

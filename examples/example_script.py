@@ -18,7 +18,7 @@ current_file_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_file_dir)
 sys.path.insert(0, project_root)
 
-from src.engine3d import Window3D, Script, GameObject, Keys, Color, WaitForSeconds, WaitEndOfFrame, Time
+from src.engine3d import Window3D, Scene3D, Script, GameObject, Keys, Color, WaitForSeconds, WaitEndOfFrame, Time
 from src.engine3d.object3d import create_cube, create_sphere, create_plane, Object3D
 from src.physics import Rigidbody, BoxCollider, SphereCollider
 from time import time
@@ -253,10 +253,11 @@ class ColorChanger(Script):
             obj3d.color = (r, g, b)
 
 
-class ScriptExample(Window3D):
+class ScriptScene(Scene3D):
     """Demo showcasing the Script component system."""
     
     def setup(self):
+        super().setup()
         # Create floor
         floor = self.add_object(create_plane(20, 20, color=Color.DARK_GRAY))
         floor.transform.position = (0, -0.5, 0)
@@ -342,14 +343,17 @@ class ScriptExample(Window3D):
     
     def on_key_press(self, key, modifiers):
         if key == Keys.ESCAPE:
-            self.close()
+            self.window.close()
     
     def on_draw(self):
+        super().on_draw()
         # Draw some UI text
         self.draw_text("Script System Demo", 10, 10, Color.WHITE, 24)
         self.draw_text("WASD: Move Player | Watch console for collisions", 10, 40, Color.WHITE, 16)
 
 
 if __name__ == "__main__":
-    game = ScriptExample(900, 600, "Engine3D - Script System Demo")
-    game.run()
+    window = Window3D(900, 600, "Engine3D - Script System Demo")
+    scene = ScriptScene()
+    window.show_scene(scene)
+    window.run()

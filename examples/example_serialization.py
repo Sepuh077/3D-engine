@@ -70,10 +70,11 @@ class PlayerMovement(Script):
             self.game_object.transform.move(dx, dy, dz)
 
 
-class SerializationDemo(Window3D):
+class SerializationScene(Scene3D):
     """Demo for testing GameObject and Scene serialization."""
     
     def setup(self):
+        super().setup()
         self.player = None
         self._create_player()
         
@@ -83,10 +84,6 @@ class SerializationDemo(Window3D):
         # Camera
         self.camera.position = (0, 15, 20)
         self.camera.look_at((0, 0, 0))
-        
-        # Light
-        self.light.direction = (0.5, -0.8, -0.5)
-        self.light.ambient = 0.4
         
         # UI state
         self.message = "Press F1-F5 for save/load tests"
@@ -143,7 +140,7 @@ class SerializationDemo(Window3D):
     
     def on_key_press(self, key, modifiers):
         if key == Keys.ESCAPE:
-            self.close()
+            self.window.close()
             return
         
         # F1: Save player as prefab
@@ -177,12 +174,8 @@ class SerializationDemo(Window3D):
         # F3: Save scene
         elif key == Keys.F3:
             try:
-                # Create a scene from current window state
-                scene = Scene3D()
-                scene.camera = self.camera
-                scene.light = self.light
-                scene.objects = list(self.objects)
-                scene.save(SCENE_PATH)
+                # Save this scene
+                self.save(SCENE_PATH)
                 self._show_message(f"Scene saved to {SCENE_PATH}")
             except Exception as e:
                 self._show_message(f"Error saving scene: {e}")
@@ -198,9 +191,8 @@ class SerializationDemo(Window3D):
                     # Load scene
                     scene = Scene3D.load(SCENE_PATH)
                     
-                    # Copy scene data to window
+                    # Copy scene data to this scene
                     self.camera = scene.camera
-                    self.light = scene.light
                     for obj in scene.objects:
                         self.add_object(obj)
                     
@@ -223,6 +215,7 @@ class SerializationDemo(Window3D):
             self._show_message("All objects cleared")
     
     def on_draw(self):
+        super().on_draw()
         # Draw help text
         y = 10
         line_height = 25
@@ -264,5 +257,7 @@ if __name__ == "__main__":
     print("  - Loading complete scenes")
     print()
     
-    game = SerializationDemo(900, 600, "Engine3D - Serialization Demo")
-    game.run()
+    window = Window3D(900, 600, "Engine3D - Serialization Demo")
+    scene = SerializationScene()
+    window.show_scene(scene)
+    window.run()

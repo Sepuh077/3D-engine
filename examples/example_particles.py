@@ -10,6 +10,7 @@ from src.engine3d import (
     Rigidbody,
     GameObject,
     Window3D, 
+    Scene3D,
     Object3D, 
     Color, 
     ParticleSystem, 
@@ -30,8 +31,9 @@ from src.engine3d import (
 from src.physics import BoxCollider, SphereCollider, CollisionMode
 
 
-class ParticleExample(Window3D):
+class ParticleScene(Scene3D):
     def setup(self):
+        super().setup()
         self.camera.position = (0, 10, 20)
         self.camera.look_at((0, 0, 0))
         self.light.direction = (1, -1, -1)
@@ -219,15 +221,16 @@ class ParticleExample(Window3D):
         self.add_object(self.ps_go)
 
     def on_update(self):
-        self.set_caption(f"Particle Test - {self.fps:.1f} FPS - Particles: {sum(1 for p in self.ps._particles if p.active)}")
+        self.window.set_caption(f"Particle Test - {self.window.fps:.1f} FPS - Particles: {sum(1 for p in self.ps._particles if p.active)}")
 
     def on_draw(self):
+        super().on_draw()
         # Draw UI
-        draw_text("Particle System Controls", 20, 10, Color.WHITE, font_size=30)
+        self.draw_text("Particle System Controls", 20, 10, Color.WHITE, font_size=30)
         for btn in self.buttons:
             x, y, w, h = btn["rect"]
-            draw_rectangle(x, y, w, h, Color.GRAY)
-            draw_text(btn["label"], x + 10, y + 5, Color.BLACK, font_size=20)
+            self.draw_rectangle(x, y, w, h, Color.GRAY)
+            self.draw_text(btn["label"], x + 10, y + 5, Color.BLACK, font_size=20)
 
     def on_mouse_press(self, x, y, button, mods):
         for btn in self.buttons:
@@ -237,4 +240,7 @@ class ParticleExample(Window3D):
                 break
 
 if __name__ == "__main__":
-    ParticleExample(1000, 800, "Particle Test").run()
+    window = Window3D(1000, 800, "Particle Test")
+    scene = ParticleScene()
+    window.show_scene(scene)
+    window.run()

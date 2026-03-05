@@ -15,19 +15,21 @@ if str(ROOT) not in sys.path:
 # Demo Arcade-style globals for 2D drawing + get_window
 from src.engine3d import (
     Rigidbody, 
-    Window3D, Keys, Color, Object3D, Time,
+    Window3D, Scene3D, Keys, Color, Object3D, Time,
     draw_text, draw_rectangle, draw_circle, draw_ellipse,
-    draw_polygon, draw_line, draw_image, get_window,
+    draw_polygon, draw_line, draw_image, get_window, PointLight3D, GameObject
 )
 from src.engine3d.object3d import create_cube, create_plane
 from src.physics import ColliderType
 
 
-class UIExample(Window3D):
+class UIScene(Scene3D):
     """Demo of 2D shapes, text, and UI over 3D."""
 
     def setup(self):
         """Setup 3D scene and 2D UI state."""
+        super().setup()
+        
         # Floor
         floor = self.add_object(create_plane(20, 20, color=Color.DARK_GRAY))
         floor.transform.position = (0, 0, 0)
@@ -43,6 +45,11 @@ class UIExample(Window3D):
         # Player cube
         self.player = self.add_object(create_cube(1.0, color=Color.YELLOW))
         self.player.transform.position = (0, 0.5, 0)
+        go = GameObject()
+        go.add_component(PointLight3D(intensity=10))
+        go.transform.position = (0, 3, 0)
+        self.add_object(go)
+        self.player.transform.add_child(go.transform)
         # collider_type set via component (default CUBE)
 
         # Camera
@@ -79,16 +86,16 @@ class UIExample(Window3D):
 
         # Player movement
         moved = False
-        if self.is_key_pressed(Keys.LEFT):
+        if self.window.is_key_pressed(Keys.LEFT):
             self.player.transform.x -= speed
             moved = True
-        if self.is_key_pressed(Keys.RIGHT):
+        if self.window.is_key_pressed(Keys.RIGHT):
             self.player.transform.x += speed
             moved = True
-        if self.is_key_pressed(Keys.UP):
+        if self.window.is_key_pressed(Keys.UP):
             self.player.transform.z -= speed
             moved = True
-        if self.is_key_pressed(Keys.DOWN):
+        if self.window.is_key_pressed(Keys.DOWN):
             self.player.transform.z += speed
             moved = True
 
@@ -118,10 +125,11 @@ class UIExample(Window3D):
             self.message = "Game Over! Score: " + str(self.score)
 
         # Update caption
-        self.set_caption(f"Engine3D 2D UI Demo - Score: {self.score} - Health: {int(self.health)} - {self.fps:.0f} FPS")
+        self.window.set_caption(f"Engine3D 2D UI Demo - Score: {self.score} - Health: {int(self.health)} - {self.window.fps:.0f} FPS")
 
     def on_draw(self):
         """Draw 2D UI overlay (shapes + text)."""
+        super().on_draw()
         if self.game_over:
             # Big centered text
             self.draw_text("GAME OVER", 400, 200, Color.RED, 72, anchor_x='center', anchor_y='center')
@@ -164,7 +172,7 @@ class UIExample(Window3D):
     def on_key_press(self, key, modifiers):
         """Handle keys."""
         if key == Keys.ESCAPE:
-            self.close()
+            self.window.close()
         elif key == Keys.R and self.game_over:
             # Restart
             self.health = 100
@@ -191,5 +199,7 @@ if __name__ == "__main__":
     print("Watch the 2D UI: health bar, score, timer circle, crosshair, random image, etc.")
     print("Supports PNG/image files via draw_image() too.")
 
-    game = UIExample(800, 600, "Engine3D - 2D UI Demo")
-    game.run()
+    window = Window3D(800, 600, "Engine3D - 2D UI Demo")
+    scene = UIScene()
+    window.show_scene(scene)
+    window.run()

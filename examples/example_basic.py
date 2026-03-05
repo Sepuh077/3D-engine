@@ -9,14 +9,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.engine3d import Window3D, GameObject, Keys, Color, ParticleSystem, ParticleBurst, Time
+from src.engine3d import Window3D, Scene3D, GameObject, Keys, Color, ParticleSystem, ParticleBurst, Time
 
 
-class BasicExample(Window3D):
+class BasicScene(Scene3D):
     """Simple example with a rotating object."""
     
     def setup(self):
         """Called once at startup."""
+        super().setup()
+        
         # Load a 3D object
         self.stairs = self.load_object(
             "example/stairs_modular_right.obj",
@@ -69,39 +71,39 @@ class BasicExample(Window3D):
         move_speed = self.entity_move_speed * delta_time
         
         # Left/Right arrows: move horizontally (X-axis)
-        if self.is_key_pressed(Keys.LEFT):
+        if self.window.is_key_pressed(Keys.LEFT):
             self.stairs.transform.x -= move_speed
-        if self.is_key_pressed(Keys.RIGHT):
+        if self.window.is_key_pressed(Keys.RIGHT):
             self.stairs.transform.x += move_speed
         
         # Up/Down arrows: move in Z-axis
-        if self.is_key_pressed(Keys.UP):
+        if self.window.is_key_pressed(Keys.UP):
             self.stairs.transform.z -= move_speed
-        if self.is_key_pressed(Keys.DOWN):
+        if self.window.is_key_pressed(Keys.DOWN):
             self.stairs.transform.z += move_speed
         
         # Camera orbit with A/D keys
-        if self.is_key_pressed(Keys.A):
+        if self.window.is_key_pressed(Keys.A):
             self.camera.orbit(-delta_time, 0)
-        if self.is_key_pressed(Keys.D):
+        if self.window.is_key_pressed(Keys.D):
             self.camera.orbit(delta_time, 0)
         
         # Camera zoom with W/S keys
-        if self.is_key_pressed(Keys.W):
+        if self.window.is_key_pressed(Keys.W):
             self.camera.zoom(-move_speed)
-        if self.is_key_pressed(Keys.S):
+        if self.window.is_key_pressed(Keys.S):
             self.camera.zoom(move_speed)
         
         # Update window title with position info
         pos = self.stairs.transform.position
-        self.set_caption(
-            f"Engine3D - Pos: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}) - {self.fps:.0f} FPS"
+        self.window.set_caption(
+            f"Engine3D - Pos: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}) - {self.window.fps:.0f} FPS"
         )
     
     def on_key_press(self, key, modifiers):
         """Called when a key is pressed."""
         if key == Keys.ESCAPE:
-            self.close()
+            self.window.close()
         elif key == Keys.SPACE:
             # Toggle rotation direction
             self.rotation_speed = -self.rotation_speed
@@ -138,5 +140,7 @@ if __name__ == "__main__":
     print()
     
     # Create and run the application
-    game = BasicExample(800, 600, "Engine3D - Basic Example")
-    game.run()
+    window = Window3D(800, 600, "Engine3D - Basic Example")
+    scene = BasicScene()
+    window.show_scene(scene)
+    window.run()

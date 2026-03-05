@@ -10,44 +10,25 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.engine3d import Window3D, Keys, Color, Time
+from src.engine3d import Window3D, Scene3D, Keys, Color, Time
 from src.engine3d.object3d import create_cube, create_plane
 from src.physics import BoxCollider, SphereCollider, CapsuleCollider, Collider
 
 
-class FPSCameraExample(Window3D):
+class FPSCameraScene(Scene3D):
     """First-person camera example."""
     
     def setup(self):
+        super().setup()
         # Create a floor
         floor = self.add_object(create_plane(50, 50, color=Color.DARK_GRAY))
         floor.position = (0, 0, 0)
         
-        # Create some objects to look at
-        # for x in range(-40, 41, 5):
-        #     for z in range(-40, 41, 5):
-        #         if x == 0 and z == 0:
-        #             continue
-        #         cube = self.add_object(create_cube(1.0, color=Color.random_bright()))
-        #         cube.position = (x, 0.5, z)
-        
-        # Create taller pillars
-        # for i in range(10):
-        #     pillar = self.add_object(create_cube(2.0, color=Color.BLUE))
-        #     angle = i * 3.14159 / 2
-        #     pillar.position = (
-        #         15 * __import__('math').cos(angle),
-        #         2,
-        #         15 * __import__('math').sin(angle)
-        #     )
-        #     pillar.scale_xyz = (2, 4, 2)
-        
         # Load the stairs model
         stairs = self.load_object(
-            r"D:\workspace\3d-game-engine\assets\glTF\Bush_Common_Flowers.gltf",
+            "example/Bush_Common_Flowers.gltf",
             position=(0, 2, 0),
             scale=2.0,
-            # color=[0, 0, 0, 0.5],
         )
         stairs.add_component(CapsuleCollider())  # user adds
         
@@ -106,16 +87,16 @@ class FPSCameraExample(Window3D):
         move_x = 0.0
         move_z = 0.0
 
-        if self.is_key_pressed(Keys.W):
+        if self.window.is_key_pressed(Keys.W):
             move_x += forward_x
             move_z += forward_z
-        if self.is_key_pressed(Keys.S):
+        if self.window.is_key_pressed(Keys.S):
             move_x -= forward_x
             move_z -= forward_z
-        if self.is_key_pressed(Keys.A):
+        if self.window.is_key_pressed(Keys.A):
             move_x -= right_x
             move_z -= right_z
-        if self.is_key_pressed(Keys.D):
+        if self.window.is_key_pressed(Keys.D):
             move_x += right_x
             move_z += right_z
 
@@ -133,8 +114,6 @@ class FPSCameraExample(Window3D):
         
         # Rotate all cubes
         for obj in self.objects:
-            # if obj.name == "cube":
-            #     obj.rotation_y += delta_time * 20
             # Check via colliders
             if obj != self.camera_obj:
                 ocoll = obj.get_component(Collider)
@@ -144,7 +123,7 @@ class FPSCameraExample(Window3D):
         
         # Update title
         pos = self.camera.position
-        self.set_caption(f"FPS Camera - Pos: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}) - {self.fps:.0f} FPS")
+        self.window.set_caption(f"FPS Camera - Pos: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}) - {self.window.fps:.0f} FPS")
     
     def on_mouse_motion(self, x, y, dx, dy):        
         # Update yaw and pitch
@@ -161,12 +140,12 @@ class FPSCameraExample(Window3D):
             import pygame
             pygame.mouse.set_visible(True)
             pygame.event.set_grab(False)
-            self.close()
+            self.window.close()
 
     def on_draw(self):
         super().on_draw()
         for obj in self.objects:
-            self.draw_collider(obj, Color.RED)
+            self.window.draw_collider(obj, Color.RED)
 
 
 if __name__ == "__main__":
@@ -177,5 +156,7 @@ if __name__ == "__main__":
     print("  ESC - Exit")
     print()
     
-    game = FPSCameraExample(800, 600, "Engine3D - FPS Camera")
-    game.run(200)
+    window = Window3D(800, 600, "Engine3D - FPS Camera")
+    scene = FPSCameraScene()
+    window.show_scene(scene)
+    window.run(200)

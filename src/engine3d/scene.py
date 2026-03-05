@@ -3,7 +3,7 @@ Scene3D - A scene that can be shown in a Window3D.
 Similar to arcade.View, but renamed for clarity.
 """
 from typing import List, Optional, Tuple, Union, TYPE_CHECKING
-import json
+import json, pygame
 
 from .gameobject import GameObject
 from .object3d import Object3D
@@ -44,8 +44,17 @@ class Scene3D:
         self.window: Optional['Window3D'] = None
         self.objects: List[GameObject] = []
         self.camera = Camera3D()
-        self.light = Light3D()
+        self._fallback_light = Light3D()
         self._setup_done = False
+    
+    @property
+    def light(self) -> Light3D:
+        """Get the first Light3D component in the scene, or a fallback."""
+        for obj in self.objects:
+            l = obj.get_component(Light3D)
+            if l:
+                return l
+        return self._fallback_light
     
     def _attach_window(self, window: 'Window3D'):
         """Called when scene is attached to a window."""
@@ -144,7 +153,11 @@ class Scene3D:
         Called once when the scene is first shown.
         Override to set up your scene.
         """
-        pass
+        # Add default directional light
+        light_obj = GameObject("Directional Light")
+        light_obj.add_component(Light3D())
+        light_obj.transform.rotation = (-45, 30, 0)
+        self.add_object(light_obj)
     
     def on_show(self):
         """
@@ -258,12 +271,6 @@ class Scene3D:
                 "near": self.camera.near,
                 "far": self.camera.far,
             },
-            "light": {
-                "direction": self.light.direction.tolist(),
-                "color": self.light.color,
-                "intensity": self.light.intensity,
-                "ambient": self.light.ambient,
-            },
             "objects": [obj._to_prefab_dict() for obj in self.objects],
         }
 
@@ -278,15 +285,20 @@ class Scene3D:
             scene.camera.near = camera_data.get("near", scene.camera.near)
             scene.camera.far = camera_data.get("far", scene.camera.far)
 
-        light_data = data.get("light", {})
-        if light_data:
-            scene.light.direction = light_data.get("direction", scene.light.direction)
-            scene.light.color = light_data.get("color", scene.light.color)
-            scene.light.intensity = light_data.get("intensity", scene.light.intensity)
-            scene.light.ambient = light_data.get("ambient", scene.light.ambient)
-
         for obj_data in data.get("objects", []):
             scene.objects.append(GameObject._from_prefab_dict(obj_data))
+
+        light_data = data.get("light", {})
+        if light_data:
+            # Handle legacy light data by creating a new GameObject
+            light_obj = GameObject("Legacy Light")
+            light = Light3D()
+            light.direction = light_data.get("direction", light.direction)
+            light.color = light_data.get("color", light.color)
+            light.intensity = light_data.get("intensity", light.intensity)
+            light.ambient = light_data.get("ambient", light.ambient)
+            light_obj.add_component(light)
+            scene.add_object(light_obj)
 
         for obj in scene.objects:
             obj.start_scripts()

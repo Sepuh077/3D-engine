@@ -19,15 +19,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.engine3d import Window3D, GameObject, Keys, Color, ParticleSystem, Time
+from src.engine3d import Window3D, Scene3D, GameObject, Keys, Color, ParticleSystem, Time
 from src.engine3d.object3d import create_cube, create_sphere
 
 
-class HierarchyExample(Window3D):
+class HierarchyScene(Scene3D):
     """Example demonstrating hierarchical transforms."""
     
     def setup(self):
         """Called once at startup."""
+        super().setup()
         # Create parent object (central cube)
         self.parent_obj = create_cube(size=1.0, position=(0, 0, 0), color=Color.RED)
         self.add_object(self.parent_obj)
@@ -79,28 +80,28 @@ class HierarchyExample(Window3D):
             self.parent_obj.transform.rotation_y += self.rotation_speed * delta_time * 0.5
         
         # Manual rotation controls
-        if self.is_key_pressed(Keys.Q):
+        if self.window.is_key_pressed(Keys.Q):
             self.parent_obj.transform.rotation_y += self.rotation_speed * delta_time
-        if self.is_key_pressed(Keys.E):
+        if self.window.is_key_pressed(Keys.E):
             self.parent_obj.transform.rotation_y -= self.rotation_speed * delta_time
-        if self.is_key_pressed(Keys.A):
+        if self.window.is_key_pressed(Keys.A):
             self.parent_obj.transform.rotation_x += self.rotation_speed * delta_time
-        if self.is_key_pressed(Keys.D):
+        if self.window.is_key_pressed(Keys.D):
             self.parent_obj.transform.rotation_x -= self.rotation_speed * delta_time
-        if self.is_key_pressed(Keys.W):
+        if self.window.is_key_pressed(Keys.W):
             self.parent_obj.transform.rotation_z += self.rotation_speed * delta_time
-        if self.is_key_pressed(Keys.S):
+        if self.window.is_key_pressed(Keys.S):
             self.parent_obj.transform.rotation_z -= self.rotation_speed * delta_time
         
         # Move parent with arrow keys
         move_dist = self.move_speed * delta_time
-        if self.is_key_pressed(Keys.LEFT):
+        if self.window.is_key_pressed(Keys.LEFT):
             self.parent_obj.transform.x -= move_dist
-        if self.is_key_pressed(Keys.RIGHT):
+        if self.window.is_key_pressed(Keys.RIGHT):
             self.parent_obj.transform.x += move_dist
-        if self.is_key_pressed(Keys.UP):
+        if self.window.is_key_pressed(Keys.UP):
             self.parent_obj.transform.z -= move_dist
-        if self.is_key_pressed(Keys.DOWN):
+        if self.window.is_key_pressed(Keys.DOWN):
             self.parent_obj.transform.z += move_dist
         
         # Rotate the grandchild independently
@@ -111,16 +112,16 @@ class HierarchyExample(Window3D):
             parent_pos = self.parent_obj.transform.position
             parent_rot = self.parent_obj.transform.rotation
             child1_world = self.child1.transform.world_position
-            self.set_caption(
+            self.window.set_caption(
                 f"Hierarchy - Parent: pos({parent_pos[0]:.1f}, {parent_pos[1]:.1f}, {parent_pos[2]:.1f}) "
                 f"rot({parent_rot[1]:.0f}°) - Child1 world: ({child1_world[0]:.1f}, {child1_world[1]:.1f}, {child1_world[2]:.1f}) "
-                f"- {self.fps:.0f} FPS"
+                f"- {self.window.fps:.0f} FPS"
             )
     
     def on_key_press(self, key, modifiers):
         """Called when a key is pressed."""
         if key == Keys.ESCAPE:
-            self.close()
+            self.window.close()
         elif key == Keys.SPACE:
             # Toggle auto-rotation
             self.auto_rotate = not self.auto_rotate
@@ -154,6 +155,7 @@ if __name__ == "__main__":
     print("  ESC - Exit")
     print()
     
-    # Create and run the application
-    game = HierarchyExample(1024, 768, "Engine3D - Hierarchy Example")
-    game.run()
+    window = Window3D(1024, 768, "Engine3D - Hierarchy Example")
+    scene = HierarchyScene()
+    window.show_scene(scene)
+    window.run()

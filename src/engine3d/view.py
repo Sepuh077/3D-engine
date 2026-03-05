@@ -43,8 +43,17 @@ class View3D:
         self.window: Optional['Window3D'] = None
         self.objects: List[GameObject] = []
         self.camera = Camera3D()
-        self.light = Light3D()
+        self._fallback_light = Light3D()
         self._setup_done = False
+        
+    @property
+    def light(self) -> Light3D:
+        """Get the first Light3D component in the view, or a fallback."""
+        for obj in self.objects:
+            l = obj.get_component(Light3D)
+            if l:
+                return l
+        return self._fallback_light
     
     def _attach_window(self, window: 'Window3D'):
         """Called when view is attached to a window."""
@@ -139,7 +148,11 @@ class View3D:
         Called once when the view is first shown.
         Override to set up your scene.
         """
-        pass
+        # Add default directional light
+        light_obj = GameObject("Directional Light")
+        light_obj.add_component(Light3D())
+        light_obj.transform.rotation = (-45, 30, 0)
+        self.add_object(light_obj)
     
     def on_show(self):
         """

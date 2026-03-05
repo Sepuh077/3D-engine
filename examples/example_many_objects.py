@@ -10,14 +10,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.engine3d import Window3D, Keys, Color, Time
+from src.engine3d import Window3D, Scene3D, Keys, Color, Time
 
 
-class ManyObjectsExample(Window3D):
+class ManyObjectsScene(Scene3D):
     """Render many objects efficiently using GPU."""
     
     def setup(self):
         """Create a grid of objects."""
+        super().setup()
+        
         self.num_objects = 500
         grid_size = 25
         spacing = 4.0
@@ -74,13 +76,13 @@ class ManyObjectsExample(Window3D):
         # Arrow keys move ALL objects - stress test for position updates!
         dx, dz = 0, 0
         
-        if self.is_key_pressed(Keys.LEFT):
+        if self.window.is_key_pressed(Keys.LEFT):
             dx = -move
-        if self.is_key_pressed(Keys.RIGHT):
+        if self.window.is_key_pressed(Keys.RIGHT):
             dx = move
-        if self.is_key_pressed(Keys.UP):
+        if self.window.is_key_pressed(Keys.UP):
             dz = -move
-        if self.is_key_pressed(Keys.DOWN):
+        if self.window.is_key_pressed(Keys.DOWN):
             dz = move
         
         # Apply movement to all objects
@@ -96,27 +98,27 @@ class ManyObjectsExample(Window3D):
             obj.transform.rotation_y = self.time * 30 + i * 10
         
         # Camera orbit with A/D
-        if self.is_key_pressed(Keys.A):
+        if self.window.is_key_pressed(Keys.A):
             self.camera.orbit(-delta_time * 0.5, 0)
-        if self.is_key_pressed(Keys.D):
+        if self.window.is_key_pressed(Keys.D):
             self.camera.orbit(delta_time * 0.5, 0)
         
         # Camera zoom with W/S
-        if self.is_key_pressed(Keys.W):
+        if self.window.is_key_pressed(Keys.W):
             self.camera.zoom(-move)
-        if self.is_key_pressed(Keys.S):
+        if self.window.is_key_pressed(Keys.S):
             self.camera.zoom(move)
         
         # Update window title with FPS and offset
-        self.set_caption(
+        self.window.set_caption(
             f"Engine3D - {self.num_objects} objects - "
             f"Offset: ({self.offset_x:.1f}, {self.offset_z:.1f}) - "
-            f"{self.fps:.1f} FPS"
+            f"{self.window.fps:.1f} FPS"
         )
     
     def on_key_press(self, key, modifiers):
         if key == Keys.ESCAPE:
-            self.close()
+            self.window.close()
         elif key == Keys.R:
             # Reset all objects to original positions
             print("Resetting positions...")
@@ -144,5 +146,7 @@ if __name__ == "__main__":
     print("  ESC - Exit")
     print()
     
-    game = ManyObjectsExample(800, 600, "Engine3D - Many Objects")
-    game.run()
+    window = Window3D(800, 600, "Engine3D - Many Objects")
+    scene = ManyObjectsScene()
+    window.show_scene(scene)
+    window.run()

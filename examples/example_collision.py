@@ -14,16 +14,18 @@ current_file_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_file_dir)
 sys.path.insert(0, project_root)
 
-from src.engine3d import Rigidbody, Window3D, Keys, Color, Time
+from src.engine3d import Rigidbody, Window3D, Scene3D, Keys, Color, Time
 from src.engine3d.object3d import create_cube, create_plane
 from src.physics import BoxCollider, SphereCollider, Collider
 
 
-class CollisionExample(Window3D):
+class CollisionScene(Scene3D):
     """Example demonstrating collision detection and bounding boxes."""
 
     def setup(self):
         """Called once at startup."""
+        super().setup()
+        
         # Create some static obstacles
         floor = self.add_object(create_plane(50, 50, color=Color.DARK_GRAY))
         floor.transform.position = (0, 0, 0)
@@ -119,19 +121,19 @@ class CollisionExample(Window3D):
         dy = self.move_dir[1] * delta
         dz = self.move_dir[2] * delta
         if dx != 0 or dy != 0 or dz != 0:
-            self.move_object(self.player, (dx, dy, dz))
+            self.window.move_object(self.player, (dx, dy, dz))
 
         # Update window title
         pos = self.player.transform.position
-        self.set_caption(
+        self.window.set_caption(
             f"Collision Demo - Pos: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}) - "
-            f"BBoxes: {'ON' if self.show_bounding_boxes else 'OFF'} - {self.fps:.0f} FPS"
+            f"BBoxes: {'ON' if self.show_bounding_boxes else 'OFF'} - {self.window.fps:.0f} FPS"
         )
 
     def on_key_press(self, key, modifiers):
         """Called when a key is pressed."""
         if key == Keys.ESCAPE:
-            self.close()
+            self.window.close()
         elif key == Keys.SPACE:
             # Toggle bounding boxes
             self.show_bounding_boxes = not self.show_bounding_boxes
@@ -140,10 +142,10 @@ class CollisionExample(Window3D):
             self.player.transform.position = (0, 0.5, 0)
 
     def on_draw(self):
+        super().on_draw()
         if self.show_bounding_boxes:
             for obj in self.objects:
-                self.draw_collider(obj, Color.WHITE)
-        return super().on_draw()
+                self.window.draw_collider(obj, Color.WHITE)
 
 
 if __name__ == "__main__":
@@ -162,5 +164,7 @@ if __name__ == "__main__":
     print("White lines: Bounding boxes (toggle with SPACE)")
     print()
 
-    game = CollisionExample(800, 600, "Engine3D - Collision Demo")
-    game.run()
+    window = Window3D(800, 600, "Engine3D - Collision Demo")
+    scene = CollisionScene()
+    window.show_scene(scene)
+    window.run()

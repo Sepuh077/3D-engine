@@ -13,7 +13,7 @@ current_file_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_file_dir)
 sys.path.insert(0, project_root)
 
-from src.engine3d import Rigidbody, Window3D, Keys, Color, Component, GameObject, Time
+from src.engine3d import Rigidbody, Window3D, Scene3D, Keys, Color, Component, GameObject, Time
 from src.engine3d.object3d import create_cube, create_plane, Object3D
 from src.physics import CollisionMode, CollisionRelation, BoxCollider, SphereCollider, CapsuleCollider, Collider, ColliderGroup
 
@@ -45,10 +45,11 @@ def make_player_callbacks(player: GameObject):
         player_coll.OnCollisionStay = on_stay
 
 
-class CollisionGroupsExample(Window3D):
+class CollisionGroupsScene(Scene3D):
     """Demo using ColliderGroup for collision relations (Trigger/Normal/Ignore)."""
     
     def setup(self):
+        super().setup()
         # Floor (solid with player; add collider separately)
         floor = self.add_object(create_plane(30, 30, color=Color.DARK_GRAY))
         floor.transform.position = (0, -0.5, 0)
@@ -157,7 +158,7 @@ class CollisionGroupsExample(Window3D):
             dy -= speed
         
         if dx or dy or dz:
-            self.move_object(self.player, (dx, dy, dz))
+            self.window.move_object(self.player, (dx, dy, dz))
         
         # Count active collisions for display (from collider)
         pcoll = self.player.get_component(Collider)
@@ -167,16 +168,16 @@ class CollisionGroupsExample(Window3D):
         pos = self.player.transform.position
         pcoll = self.player.get_component(Collider)
         mode_str = str(pcoll.collision_mode).split('.')[-1] if pcoll else "N/A"
-        self.set_caption(
+        self.window.set_caption(
             f"Groups Demo - Player: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}) | "
             f"Mode:{mode_str} Speed:{self.player.move_speed} | "
             f"Collisions: {self.collision_count} | "
-            f"FPS: {self.fps:.0f}"
+            f"FPS: {self.window.fps:.0f}"
         )
     
     def on_key_press(self, key, modifiers):
         if key == Keys.ESCAPE:
-            self.close()
+            self.window.close()
         elif key == Keys.SPACE:
             self.show_colliders = not self.show_colliders
         elif key == pygame.K_c:
@@ -193,6 +194,7 @@ class CollisionGroupsExample(Window3D):
             self.player.move_speed = 1000.0
     
     def on_draw(self):
+        super().on_draw()
         # Draw colliders if enabled
         if self.show_colliders:
             for obj in self.objects:
@@ -200,11 +202,11 @@ class CollisionGroupsExample(Window3D):
                 col = Color.WHITE
                 if obj == self.player:
                     col = Color.BLUE
-                elif hasattr(obj, 'name') and 'Wall' in obj.name:
+                elif hasattr(obj, 'name') and obj.name and 'Wall' in obj.name:
                     col = Color.RED
-                elif hasattr(obj, 'name') and 'Trigger' in obj.name:
+                elif hasattr(obj, 'name') and obj.name and 'Trigger' in obj.name:
                     col = Color.PURPLE
-                self.draw_collider(obj, col)
+                self.window.draw_collider(obj, col)
         # Show mode/speed info
         pcoll = self.player.get_component(Collider)
         mode_str = str(pcoll.collision_mode).split('.')[-1] if pcoll else "N/A"
@@ -229,5 +231,7 @@ if __name__ == "__main__":
     print()
     print("Watch console for prints/color changes.")
     print()
-    game = CollisionGroupsExample(900, 600, "Engine3D - ColliderGroup Demo")
-    game.run()
+    window = Window3D(900, 600, "Engine3D - ColliderGroup Demo")
+    scene = CollisionGroupsScene()
+    window.show_scene(scene)
+    window.run()

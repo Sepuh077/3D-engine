@@ -147,6 +147,14 @@ class Window3D:
     uniform vec3 light_dir;
     uniform vec3 light_color;
     uniform float ambient;
+    
+    #define MAX_POINT_LIGHTS 4
+    uniform int num_point_lights;
+    uniform vec3 point_light_positions[MAX_POINT_LIGHTS];
+    uniform vec3 point_light_colors[MAX_POINT_LIGHTS];
+    uniform float point_light_intensities[MAX_POINT_LIGHTS];
+    uniform float point_light_ranges[MAX_POINT_LIGHTS];
+    
     uniform vec4 base_color;
     uniform sampler2D tex;
     uniform bool use_texture;
@@ -155,10 +163,28 @@ class Window3D:
     
     void main() {
         vec3 normal = normalize(frag_normal);
-        vec3 light = normalize(-light_dir);
         
-        // Two-sided lighting
-        float diffuse = abs(dot(normal, light));
+        // Directional light
+        vec3 dir_light_dir = normalize(-light_dir);
+        // Two-sided lighting for directional light
+        float dir_diffuse = abs(dot(normal, dir_light_dir));
+        vec3 total_light = light_color * (ambient + dir_diffuse * (1.0 - ambient));
+        
+        // Point lights
+        for (int i = 0; i < num_point_lights; ++i) {
+            vec3 light_vec = point_light_positions[i] - frag_position;
+            float distance = length(light_vec);
+            if (distance < point_light_ranges[i]) {
+                vec3 pl_dir = normalize(light_vec);
+                float pl_diffuse = max(dot(normal, pl_dir), 0.0);
+                
+                // Attenuation (quadratic mix)
+                float attenuation = 1.0 - (distance / point_light_ranges[i]);
+                attenuation = attenuation * attenuation; // Smooth falloff
+                
+                total_light += point_light_colors[i] * pl_diffuse * point_light_intensities[i] * attenuation;
+            }
+        }
         
         // Combine vertex color and object tint
         vec4 albedo = frag_v_color * base_color;
@@ -168,7 +194,7 @@ class Window3D:
         
         if (albedo.a < 0.001) discard;
         
-        vec3 color = albedo.rgb * light_color * (ambient + diffuse * (1.0 - ambient));
+        vec3 color = albedo.rgb * total_light;
         frag_color = vec4(color, albedo.a);
     }
     '''
@@ -307,7 +333,7 @@ class Window3D:
         # Scene elements
         self.objects: List[GameObject] = []
         self.camera = Camera3D()
-        self.light = Light3D()
+        self._fallback_light = Light3D()
         
         # Scene system
         self._current_scene: Optional['Scene3D'] = None
@@ -356,7 +382,15 @@ class Window3D:
         from . import drawing
         drawing.set_window(self)
 
-    
+    @property
+    def light(self) -> Light3D:
+        """Get the first Light3D component in the window, or a fallback."""
+        for obj in self.objects:
+            l = obj.get_component(Light3D)
+            if l:
+                return l
+        return self._fallback_light
+
     # =========================================================================
     # Object management
     # =========================================================================
@@ -890,7 +924,11 @@ class Window3D:
         Called once when the application starts.
         Override to set up your scene.
         """
-        pass
+        # Add default directional light
+        light_obj = GameObject("Directional Light")
+        light_obj.add_component(Light3D())
+        light_obj.transform.rotation = (-45, 30, 0)
+        self.add_object(light_obj)
     
     def on_update(self):
         """
@@ -1304,10 +1342,50 @@ class Window3D:
         # ------------------------------------------------------------
         # Light uniforms
         # ------------------------------------------------------------
+        from .light import PointLight3D
+        point_lights = []
+        for obj in objects:
+            pls = obj.get_components(PointLight3D)
+            point_lights.extend(pls)
+            
+        num_pl = min(len(point_lights), 4)
+
         for program in (self._program, self._instanced_program):
             program['light_dir'].value = tuple(light.direction)
             program['light_color'].value = tuple(light.color)
             program['ambient'].value = light.ambient
+            
+            if 'num_point_lights' in program:
+                program['num_point_lights'].value = num_pl
+                
+                if num_pl > 0:
+                    pos_vals = []
+                    col_vals = []
+                    int_vals = []
+                    range_vals = []
+                    for i in range(4):
+                        if i < num_pl:
+                            pl = point_lights[i]
+                            # Use world_position if available
+                            pos = pl.game_object.transform.world_position if pl.game_object else pl.position
+                            pos_vals.extend(pos)
+                            col_vals.extend(pl.color[:3] if len(pl.color) >= 3 else (1.0, 1.0, 1.0))
+                            int_vals.append(float(pl.intensity))
+                            range_vals.append(float(pl.range))
+                        else:
+                            pos_vals.extend([0.0, 0.0, 0.0])
+                            col_vals.extend([0.0, 0.0, 0.0])
+                            int_vals.append(0.0)
+                            range_vals.append(0.0)
+                    
+                    if 'point_light_positions' in program:
+                        program['point_light_positions'].write(np.array(pos_vals, dtype='f4').tobytes())
+                    if 'point_light_colors' in program:
+                        program['point_light_colors'].write(np.array(col_vals, dtype='f4').tobytes())
+                    if 'point_light_intensities' in program:
+                        program['point_light_intensities'].write(np.array(int_vals, dtype='f4').tobytes())
+                    if 'point_light_ranges' in program:
+                        program['point_light_ranges'].write(np.array(range_vals, dtype='f4').tobytes())
 
         # ------------------------------------------------------------
         # Visibility + culling + Sorting

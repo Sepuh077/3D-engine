@@ -11,17 +11,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import random
-
-from src.engine3d import Rigidbody, Window3D, Keys, Color, Time
+from src.engine3d import Rigidbody, Window3D, Scene3D, Keys, Color, Time
 from src.engine3d.object3d import create_cube, create_plane
 from src.physics import BoxCollider, SphereCollider, CapsuleCollider, Collider
 
 
-class FPSCameraExample(Window3D):
+class FPSCameraScene(Scene3D):
     """First-person camera example."""
     
     def setup(self):
+        super().setup()
         # Create a floor
         floor = self.add_object(create_plane(50, 50, color=Color.DARK_GRAY))
         floor.transform.position = (0, 0, 0)
@@ -84,17 +83,17 @@ class FPSCameraExample(Window3D):
         # Movement
         speed = self.move_speed * delta_time
         
-        if self.is_key_pressed(Keys.W):
+        if self.window.is_key_pressed(Keys.W):
             self.camera.move_forward(speed)
-        if self.is_key_pressed(Keys.S):
+        if self.window.is_key_pressed(Keys.S):
             self.camera.move_forward(-speed)
-        if self.is_key_pressed(Keys.A):
+        if self.window.is_key_pressed(Keys.A):
             self.camera.move_right(-speed)
-        if self.is_key_pressed(Keys.D):
+        if self.window.is_key_pressed(Keys.D):
             self.camera.move_right(speed)
-        if self.is_key_pressed(Keys.SPACE):
+        if self.window.is_key_pressed(Keys.SPACE):
             self.camera.move_up(speed)
-        if self.is_key_pressed(Keys.LSHIFT):
+        if self.window.is_key_pressed(Keys.LSHIFT):
             self.camera.move_up(-speed)
 
         self.camera_obj.transform.position = self.camera.position
@@ -113,11 +112,10 @@ class FPSCameraExample(Window3D):
         
         # Update title
         pos = self.camera.position
-        self.set_caption(f"FPS Camera - Pos: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}) - {self.fps:.0f} FPS")
+        self.window.set_caption(f"FPS Camera - Pos: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}) - {self.window.fps:.0f} FPS")
     
     def on_mouse_motion(self, x, y, dx, dy):
         import math
-        import numpy as np
         
         # Update yaw and pitch
         self.yaw -= dx * self.mouse_sensitivity
@@ -147,13 +145,14 @@ class FPSCameraExample(Window3D):
             import pygame
             pygame.mouse.set_visible(True)
             pygame.event.set_grab(False)
-            self.close()
+            self.window.close()
 
     def on_draw(self):
+        super().on_draw()
         if not self.dc:
             return
         for obj in self.objects:
-            self.draw_collider(obj, color=(0, 1, 0))
+            self.window.draw_collider(obj, color=(0, 1, 0))
 
 
 if __name__ == "__main__":
@@ -166,5 +165,7 @@ if __name__ == "__main__":
     print("  ESC - Exit")
     print()
     
-    game = FPSCameraExample(800, 600, "Engine3D - FPS Camera")
-    game.run(200)
+    window = Window3D(800, 600, "Engine3D - FPS Camera")
+    scene = FPSCameraScene()
+    window.show_scene(scene)
+    window.run(200)
