@@ -19,7 +19,7 @@ def test_debug_raycast_mock(mock_get_window):
     window._ctx = MagicMock()
     window._collider_program = MagicMock()
     window.aspect = 1.33
-    window.current_view = None
+    window.current_scene = None
     
     # Mock Camera
     camera = MagicMock()

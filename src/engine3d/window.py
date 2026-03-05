@@ -33,7 +33,7 @@ except ImportError:
     print("Warning: ModernGL not installed. Install with: pip install moderngl")
 
 if TYPE_CHECKING:
-    from .view import View3D
+    from .scene import Scene3D
 
 
 @dataclass
@@ -309,8 +309,8 @@ class Window3D:
         self.camera = Camera3D()
         self.light = Light3D()
         
-        # View system
-        self._current_view: Optional['View3D'] = None
+        # Scene system
+        self._current_scene: Optional['Scene3D'] = None
         
         # Timing
         self._clock = pygame.time.Clock()
@@ -612,7 +612,7 @@ class Window3D:
         self._apply_caption()
 
     def _active_objects(self) -> List[GameObject]:
-        return self._current_view.objects if self._current_view else self.objects
+        return self._current_scene.objects if self._current_scene else self.objects
 
     def _get_or_create_mesh(self, obj: Object3D) -> Optional[MeshGPU]:
         key = obj.get_mesh_key()
@@ -792,42 +792,41 @@ class Window3D:
             )
     
     # =========================================================================
-    # View management
+    # Scene management
     # =========================================================================
     
-    def show_view(self, view: 'View3D'):
+    def show_scene(self, scene: 'Scene3D'):
         """
-        Switch to a different view.
+        Switch to a different scene.
         
         Args:
-            view: The View3D to switch to
+            scene: The Scene3D to switch to
         """
-        from .view import View3D
         
-        # Detach current view
-        if self._current_view:
-            self._current_view._detach_window()
+        # Detach current scene
+        if self._current_scene:
+            self._current_scene._detach_window()
 
-        # Clear static batches when switching views
+        # Clear static batches when switching scenes
         if self._static_batches_active:
             self.clear_static_batches()
         
-        # Attach new view
-        self._current_view = view
-        view._attach_window(self)
+        # Attach new scene
+        self._current_scene = scene
+        scene._attach_window(self)
         
-        # Initialize GPU for view's objects
-        for obj in view.objects:
+        # Initialize GPU for scene's objects
+        for obj in scene.objects:
             obj3d = obj.get_component(Object3D)
             if obj3d and not obj3d._gpu_initialized:
                 self._ensure_mesh(obj3d)
         
-        view.on_show()
+        scene.on_show()
     
     @property
-    def current_view(self) -> Optional['View3D']:
-        """Get the current view."""
-        return self._current_view
+    def current_scene(self) -> Optional['Scene3D']:
+        """Get the current scene."""
+        return self._current_scene
     
     # =========================================================================
     # Properties
@@ -1174,7 +1173,7 @@ class Window3D:
         )
 
     def draw_collider(self, obj: GameObject, color=(0, 1, 0), line_width=1.0):
-        camera = self._current_view.camera if self._current_view else self.camera
+        camera = self._current_scene.camera if self._current_scene else self.camera
         view = camera.get_view_matrix()
         proj = camera.get_projection_matrix(self.aspect)
 
@@ -1290,10 +1289,10 @@ class Window3D:
         # ------------------------------------------------------------
         # Camera / view setup
         # ------------------------------------------------------------
-        if self._current_view:
-            camera = self._current_view.camera
-            light = self._current_view.light
-            objects = self._current_view.objects
+        if self._current_scene:
+            camera = self._current_scene.camera
+            light = self._current_scene.light
+            objects = self._current_scene.objects
         else:
             camera = self.camera
             light = self.light
@@ -1397,8 +1396,8 @@ class Window3D:
         # ------------------------------------------------------------
         # Custom draw hooks
         # ------------------------------------------------------------
-        if self._current_view:
-            self._current_view.on_draw()
+        if self._current_scene:
+            self._current_scene.on_draw()
         self.on_draw()
 
         # Render 2D overlay on top (after all 3D and custom draws)
@@ -1420,15 +1419,15 @@ class Window3D:
             elif event.type == pygame.KEYDOWN:
                 self._keys_pressed.add(event.key)
                 mods = pygame.key.get_mods()
-                if self._current_view:
-                    self._current_view.on_key_press(event.key, mods)
+                if self._current_scene:
+                    self._current_scene.on_key_press(event.key, mods)
                 self.on_key_press(event.key, mods)
                 
             elif event.type == pygame.KEYUP:
                 self._keys_pressed.discard(event.key)
                 mods = pygame.key.get_mods()
-                if self._current_view:
-                    self._current_view.on_key_release(event.key, mods)
+                if self._current_scene:
+                    self._current_scene.on_key_release(event.key, mods)
                 self.on_key_release(event.key, mods)
                 
             elif event.type == pygame.MOUSEBUTTONDOWN:
@@ -1438,40 +1437,40 @@ class Window3D:
                 
                 # Handle scroll wheel
                 if event.button == 4:  # Scroll up
-                    if self._current_view:
-                        self._current_view.on_mouse_scroll(x, y, 0, 1)
+                    if self._current_scene:
+                        self._current_scene.on_mouse_scroll(x, y, 0, 1)
                     self.on_mouse_scroll(x, y, 0, 1)
                 elif event.button == 5:  # Scroll down
-                    if self._current_view:
-                        self._current_view.on_mouse_scroll(x, y, 0, -1)
+                    if self._current_scene:
+                        self._current_scene.on_mouse_scroll(x, y, 0, -1)
                     self.on_mouse_scroll(x, y, 0, -1)
                 else:
-                    if self._current_view:
-                        self._current_view.on_mouse_press(x, y, event.button, mods)
+                    if self._current_scene:
+                        self._current_scene.on_mouse_press(x, y, event.button, mods)
                     self.on_mouse_press(x, y, event.button, mods)
                     
             elif event.type == pygame.MOUSEBUTTONUP:
                 self._mouse_buttons.discard(event.button)
                 x, y = event.pos
                 mods = pygame.key.get_mods()
-                if self._current_view:
-                    self._current_view.on_mouse_release(x, y, event.button, mods)
+                if self._current_scene:
+                    self._current_scene.on_mouse_release(x, y, event.button, mods)
                 self.on_mouse_release(x, y, event.button, mods)
                 
             elif event.type == pygame.MOUSEMOTION:
                 x, y = event.pos
                 dx, dy = event.rel
                 self._mouse_position = (x, y)
-                if self._current_view:
-                    self._current_view.on_mouse_motion(x, y, dx, dy)
+                if self._current_scene:
+                    self._current_scene.on_mouse_motion(x, y, dx, dy)
                 self.on_mouse_motion(x, y, dx, dy)
                 
             elif event.type == pygame.VIDEORESIZE:
                 self.width = event.w
                 self.height = event.h
                 self._ctx.viewport = (0, 0, event.w, event.h)
-                if self._current_view:
-                    self._current_view.on_resize(event.w, event.h)
+                if self._current_scene:
+                    self._current_scene.on_resize(event.w, event.h)
                 self.on_resize(event.w, event.h)
     
     # =========================================================================
@@ -1508,8 +1507,8 @@ class Window3D:
             self._handle_events()
             
             # Update
-            if self._current_view:
-                self._current_view.on_update()
+            if self._current_scene:
+                self._current_scene.on_update()
             self.on_update()
 
             for obj in self._active_objects():
@@ -1541,8 +1540,8 @@ class Window3D:
         for obj in self.objects:
             if obj.get_component(Object3D): obj.get_component(Object3D)._release_gpu()
         
-        if self._current_view:
-            for obj in self._current_view.objects:
+        if self._current_scene:
+            for obj in self._current_scene.objects:
                 if obj.get_component(Object3D): obj.get_component(Object3D)._release_gpu()
         
         # Release 2D overlay resources

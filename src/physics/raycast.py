@@ -382,8 +382,8 @@ def debug_raycast(ray: Ray, length: float = 10.0, color: Tuple[float, float, flo
     )
     
     # Setup uniforms
-    if window.current_view:
-        camera = window.current_view.camera
+    if window.current_scene:
+        camera = window.current_scene.camera
     else:
         camera = window.camera
         

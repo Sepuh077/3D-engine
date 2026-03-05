@@ -28,6 +28,12 @@ class Object3D(Component):
         self._local_max = None
         self._local_radius = None
 
+        # Geometry source tracking (for serialization)
+        self._source_type = "none"  # none | file | primitive
+        self._source_path: Optional[str] = None
+        self._primitive_type: Optional[str] = None
+        self._primitive_params: dict = {}
+
         # Texture support (for GLTF etc)
         self._uses_texture = False
         self._texture_image = None
@@ -59,6 +65,12 @@ class Object3D(Component):
         self._load_with_trimesh(filename)
         # Post-processing
         self._post_process_geometry(filename)
+
+        # Track geometry source
+        self._source_type = "file"
+        self._source_path = filename
+        self._primitive_type = None
+        self._primitive_params = {}
 
     def _post_process_geometry(self, geometry_name: str):
         if self.mesh is not None and len(self.mesh.vertices) > 0:
@@ -379,6 +391,9 @@ def create_cube(size: float = 1.0,
     go.transform.scale = size
     obj = Object3D(color=color)
     go.add_component(obj)
+    obj._source_type = "primitive"
+    obj._primitive_type = "cube"
+    obj._primitive_params = {"size": size}
     
     s = 1.0 / 2 # Size handled by scale
     vertices = np.array([
@@ -413,6 +428,9 @@ def create_sphere(radius: float = 1.0,
     go.transform.scale = radius
     obj = Object3D(color=color)
     go.add_component(obj)
+    obj._source_type = "primitive"
+    obj._primitive_type = "sphere"
+    obj._primitive_params = {"radius": radius, "subdivisions": subdivisions}
     
     mesh = trimesh.creation.icosphere(subdivisions=subdivisions, radius=1.0)
     obj.mesh = mesh
@@ -428,6 +446,9 @@ def create_plane(width: float = 10.0,
     go.transform.scale_xyz = (width, 1.0, height)
     obj = Object3D(color=color)
     go.add_component(obj)
+    obj._source_type = "primitive"
+    obj._primitive_type = "plane"
+    obj._primitive_params = {"width": width, "height": height}
     
     w, h = 1.0 / 2, 1.0 / 2
     vertices = np.array([

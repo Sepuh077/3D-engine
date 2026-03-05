@@ -94,20 +94,20 @@ class ManyObjects(Window3D):
 ManyObjects(800, 600, "100 Objects Demo").run()
 ```
 
-### Using Views for Scenes
+### Using Scenes
 ```python
-from src.engine3d import Window3D, View3D, Keys, Time
+from src.engine3d import Window3D, Scene3D, Keys, Time
 
-class MenuView(View3D):
+class MenuScene(Scene3D):
     def setup(self):
         self.title = self.load_object("title.obj")
         self.camera.position = (0, 5, 10)
     
     def on_key_press(self, key, mods):
         if key == Keys.ENTER:
-            self.window.show_view(GameView())
+            self.window.show_scene(GameScene())
 
-class GameView(View3D):
+class GameScene(Scene3D):
     def setup(self):
         self.player = self.load_object("player.obj")
     
@@ -117,13 +117,13 @@ class GameView(View3D):
     
     def on_key_press(self, key, mods):
         if key == Keys.ESCAPE:
-            self.window.show_view(MenuView())
+            self.window.show_scene(MenuScene())
 
 class Game(Window3D):
     def setup(self):
-        self.show_view(MenuView())
+        self.show_scene(MenuScene())
 
-Game(800, 600, "Game with Views").run()
+Game(800, 600, "Game with Scenes").run()
 ```
 
 ## API Reference
@@ -141,6 +141,7 @@ class Window3D:
     camera: Camera3D
     light: Light3D
     objects: List[Object3D]
+    current_scene: Scene3D
     
     # Methods
     def setup(self)                              # Override: called once at start
@@ -155,7 +156,7 @@ class Window3D:
     def load_object(filename, **kwargs) -> Object3D
     def add_object(obj: Object3D) -> Object3D
     def remove_object(obj: Object3D)
-    def show_view(view: View3D)
+    def show_scene(scene: Scene3D)
     def is_key_pressed(key: int) -> bool
     def run(fps: int = 60)
     def close()
@@ -285,7 +286,7 @@ class Keys:
 │   └── engine3d/
 │       ├── __init__.py     # Main imports
 │       ├── window.py       # Window3D class
-│       ├── view.py         # View3D class
+│       ├── scene.py        # Scene3D class
 │       ├── object3d.py     # Object3D class
 │       ├── camera.py       # Camera3D class
 │       ├── light.py        # Light3D class
@@ -294,7 +295,7 @@ class Keys:
 ├── examples/
 │   ├── example_basic.py
 │   ├── example_many_objects.py
-│   ├── example_views.py
+│   ├── example_scenes.py
 │   └── example_fps_camera.py
 └── example/
     └── stairs_modular_right.obj

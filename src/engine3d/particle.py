@@ -250,7 +250,7 @@ class ParticleSystem(Component):
     def on_attach(self) -> None:
         from .drawing import get_window
         window = get_window()
-        self._container = window.current_view if window and window.current_view else window
+        self._container = window.current_scene if window and window.current_scene else window
         self._build_pool()
         if self.play_on_awake:
             self.play()
