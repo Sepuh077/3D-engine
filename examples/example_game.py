@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.engine3d import Window3D, Scene3D, Keys, Color, Time
+from src.engine3d import Window3D, Scene3D, Keys, Color, Time, Object3D
+from src.engine3d.graphics.material import UnlitMaterial
 from src.engine3d.object3d import create_cube, create_plane
 from src.physics import BoxCollider, SphereCollider, CapsuleCollider, Collider
 
@@ -22,7 +23,7 @@ class FPSCameraScene(Scene3D):
         super().setup()
         # Create a floor
         floor = self.add_object(create_plane(50, 50, color=Color.DARK_GRAY))
-        floor.position = (0, 0, 0)
+        floor.transform.position = (0, 0, 0)
         
         # Load the stairs model
         stairs = self.load_object(
@@ -30,12 +31,13 @@ class FPSCameraScene(Scene3D):
             position=(0, 2, 0),
             scale=2.0,
         )
+        stairs.get_component(Object3D).material = UnlitMaterial(color=Color.WHITE)
         stairs.add_component(CapsuleCollider())  # user adds
         
         # Camera setup - first person style
         self.camera_obj = self.add_object(create_cube(1, (0, 0.5, 0), color=Color.WHITE))
         self.camera_obj.add_component(SphereCollider())
-        self.camera.look_at(self.camera_obj.position)
+        self.camera.look_at(self.camera_obj.transform.position)
         self.update_camera_position()
         
         # Mouse look settings
@@ -54,8 +56,8 @@ class FPSCameraScene(Scene3D):
         dist = 5
         height = 4
 
-        pitch = self.camera_obj.rotation_x
-        yaw = self.camera_obj.rotation_y
+        pitch = self.camera_obj.transform.rotation_x
+        yaw = self.camera_obj.transform.rotation_y
 
         # Forward direction from yaw & pitch
         dir_x = -math.cos(pitch) * math.sin(yaw)
@@ -63,7 +65,7 @@ class FPSCameraScene(Scene3D):
         dir_z = -math.cos(pitch) * math.cos(yaw)
 
         # Camera goes behind that direction
-        p = self.camera_obj.position
+        p = self.camera_obj.transform.position
         cam_x = p[0] - dir_x * dist
         cam_y = p[1] - dir_y * dist + height
         cam_z = p[2] - dir_z * dist
@@ -71,13 +73,13 @@ class FPSCameraScene(Scene3D):
         self.camera.position = (cam_x, cam_y, cam_z)
 
         # 🔴 THIS is the missing part
-        self.camera.look_at(self.camera_obj.position)
+        self.camera.look_at(self.camera_obj.transform.position)
     
     def on_update(self):        
         delta_time = Time.delta_time
         # Movement
         speed = self.move_speed * delta_time
-        yaw = self.camera_obj.rotation_y
+        yaw = self.camera_obj.transform.rotation_y
 
         forward_x = -math.sin(yaw)
         forward_z = -math.cos(yaw)
@@ -104,10 +106,10 @@ class FPSCameraScene(Scene3D):
         if move_len > 0:
             move_x = move_x / move_len * speed
             move_z = move_z / move_len * speed
-            self.camera_obj.position = (
-                self.camera_obj.position[0] + move_x,
-                self.camera_obj.position[1],
-                self.camera_obj.position[2] + move_z,
+            self.camera_obj.transform.position = (
+                self.camera_obj.transform.position[0] + move_x,
+                self.camera_obj.transform.position[1],
+                self.camera_obj.transform.position[2] + move_z,
             )
 
         self.update_camera_position()
@@ -133,7 +135,7 @@ class FPSCameraScene(Scene3D):
         # Clamp pitch
         self.pitch = max(-1.5, min(1.5, self.pitch))
         
-        self.camera_obj.rotation = (self.pitch, self.yaw, 0)
+        self.camera_obj.transform.rotation = (self.pitch, self.yaw, 0)
     
     def on_key_press(self, key, modifiers):
         if key == Keys.ESCAPE:
