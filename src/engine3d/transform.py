@@ -335,6 +335,8 @@ class Transform(Component):
         # Compute world transform first
         self._compute_world_transform()
 
+        # Get rotation matrix (cached in _compute_world_transform or computed here if needed)
+        # Recomputing R here to be safe and consistent with previous code
         cx, cy, cz = np.cos(self._world_rotation)
         sx, sy, sz = np.sin(self._world_rotation)
         Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]], dtype=np.float32)
@@ -352,3 +354,120 @@ class Transform(Component):
         self._cached_model = S @ R4 @ T
         self._transform_dirty = False
         return self._cached_model
+
+    @property
+    def rotation_matrix(self) -> np.ndarray:
+        """Get the 3x3 rotation matrix (world space)."""
+        # Ensure cached rotation is up to date
+        self.get_model_matrix() 
+        return self._cached_rotation
+
+    @property
+    def forward(self) -> np.ndarray:
+        """Get forward vector (world space, assuming -Z is forward)."""
+        return -self.rotation_matrix[2, :]
+
+    @property
+    def backward(self) -> np.ndarray:
+        """Get backward vector (world space, +Z)."""
+        return self.rotation_matrix[2, :]
+
+    @property
+    def right(self) -> np.ndarray:
+        """Get right vector (world space, +X)."""
+        return self.rotation_matrix[0, :]
+
+    @property
+    def left(self) -> np.ndarray:
+        """Get left vector (world space, -X)."""
+        return -self.rotation_matrix[0, :]
+
+    @property
+    def up(self) -> np.ndarray:
+        """Get up vector (world space, +Y)."""
+        return self.rotation_matrix[1, :]
+
+    @property
+    def down(self) -> np.ndarray:
+        """Get down vector (world space, -Y)."""
+        return -self.rotation_matrix[1, :]
+
+    def look_at(self, target: np.ndarray, world_up: np.ndarray = np.array([0, 1, 0], dtype=np.float32)):
+        """Look at a target position."""
+        eye = self.world_position
+        target = np.array(target, dtype=np.float32)
+        
+        # Forward vector (from eye to target)
+        # Note: Camera looks down -Z, so forward is target - eye
+        f = target - eye
+        dist = np.linalg.norm(f)
+        if dist < 1e-6:
+            return
+        f = f / dist
+        
+        # Right vector
+        r = np.cross(f, world_up)
+        if np.linalg.norm(r) < 1e-6:
+            # Handle case where looking straight up/down
+            r = np.array([1, 0, 0], dtype=np.float32)
+        else:
+            r = r / np.linalg.norm(r)
+            
+        # Up vector
+        u = np.cross(r, f)
+        
+        # Create rotation matrix [r, u, -f]
+        # This transforms local basis to world basis
+        R = np.vstack([r, u, -f])
+        
+        # Extract Euler angles from rotation matrix
+        # Assuming XYZ order (Rx @ Ry @ Rz)
+        # R = [ [cy*cz,              -cy*sz,               sy    ],
+        #       [cx*sz + sx*sy*cz,   cx*cz - sx*sy*sz,    -sx*cy ],
+        #       [sx*sz - cx*sy*cz,   sx*cz + cx*sy*sz,     cx*cy ] ]
+        # Wait, my rotation matrix construction in _compute_world_transform might be different.
+        # Rx = [[1,0,0],[0,cx,-sx],[0,sx,cx]]
+        # Ry = [[cy,0,sy],[0,1,0],[-sy,0,cy]]
+        # Rz = [[cz,-sz,0],[sz,cz,0],[0,0,1]]
+        # R = Rx @ Ry @ Rz
+        
+        # Let's use scipy or a robust method if available, or just simple extraction
+        # Sy = R[0, 2]
+        # cy = sqrt(1 - sy^2)
+        # if cy > 1e-6:
+        #     sx = -R[1, 2] / cy
+        #     cx = R[2, 2] / cy
+        #     sz = -R[0, 1] / cy
+        #     cz = R[0, 0] / cy
+        # else:
+        #     # Gimbal lock
+        #     ...
+        
+        # Simplified extraction for YXZ order which is common? No, I used XYZ.
+        # Let's reverse engineer my R construction:
+        # R = Rx @ Ry @ Rz
+        # = [ [cy*cz,              -cy*sz,               sy    ],
+        #     [cx*sz + sx*sy*cz,   cx*cz - sx*sy*sz,    -sx*cy ],
+        #     [sx*sz - cx*sy*cz,   sx*cz + cx*sy*sz,     cx*cy ] ]
+        # Note: This matches standard XYZ intrinsic if row/col vectors are correct.
+        
+        # sy = R[0, 2]
+        sy = R[0, 2]
+        if sy < 1.0:
+            if sy > -1.0:
+                cy = np.sqrt(1 - sy*sy)
+                rotation_y = np.arcsin(sy)
+                rotation_x = np.arctan2(-R[1, 2], R[2, 2])
+                rotation_z = np.arctan2(-R[0, 1], R[0, 0])
+            else:
+                # sy = -1
+                rotation_y = -np.pi / 2
+                rotation_x = -np.arctan2(R[1, 0], R[1, 1])
+                rotation_z = 0
+        else:
+            # sy = 1
+            rotation_y = np.pi / 2
+            rotation_x = np.arctan2(R[1, 0], R[1, 1])
+            rotation_z = 0
+            
+        self.world_rotation = (np.degrees(rotation_x), np.degrees(rotation_y), np.degrees(rotation_z))

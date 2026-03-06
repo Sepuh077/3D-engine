@@ -125,87 +125,140 @@ class Object3D(Component):
             mesh.visual.vertex_colors = colors
             return
 
-        # Textured path
+        # Textured path - always generate vertex colors from texture as fallback
         if isinstance(visual, TextureVisuals):
             material = visual.material
-            alpha_mode = getattr(material, "alphaMode", "OPAQUE")
-            if alpha_mode != "OPAQUE":
-                self._uses_texture = True
-                raw_img = (
-                    getattr(material, "baseColorTexture", None)
-                    or getattr(material, "image", None)
-                )
-                img_arr = np.asarray(raw_img)
-                if img_arr.ndim == 2:
-                    img_arr = np.stack([img_arr] * 3, axis=2)
-                img_arr = img_arr.astype(np.float32) / 255.0
-                if img_arr.shape[2] == 3:
-                    img_arr = np.pad(img_arr, ((0, 0), (0, 0), (0, 1)), constant_values=1.0)
-                self._texture_image = img_arr
-                self._uv = visual.uv
-                return
-
-            # Texture-to-vertex-colors fallback (simplified sampling)
+            uv = visual.uv
             img = (
                 getattr(material, "baseColorTexture", None)
                 or getattr(material, "image", None)
             )
-            uv = visual.uv
-            if img is None or uv is None:
+
+            if img is not None and uv is not None:
+                # Check if texture is valid (not a placeholder with all same color or transparent)
+                img_arr = np.array(img)
+                is_valid_texture = self._is_valid_texture(img_arr)
+
+                # Always generate vertex colors from texture for fallback
+                self._generate_vertex_colors_from_texture(mesh, img_arr, uv)
+
+                # Only use texture rendering if it's valid and has transparency needs
+                alpha_mode = getattr(material, "alphaMode", "OPAQUE")
+                if alpha_mode != "OPAQUE" and is_valid_texture:
+                    self._uses_texture = True
+                    if img_arr.ndim == 2:
+                        img_arr = np.stack([img_arr] * 3, axis=2)
+                    img_float = img_arr.astype(np.float32) / 255.0
+                    if img_float.shape[2] == 3:
+                        img_float = np.pad(img_float, ((0, 0), (0, 0), (0, 1)), constant_values=1.0)
+                    self._texture_image = img_float
+                    self._uv = uv
                 return
-
-            img = np.array(img).astype(np.float32) / 255.0
-            h, w = img.shape[:2]
-
-            def sample_color(u, v):
-                u = u % 1.0
-                v = v % 1.0
-                x = np.clip(int(u * (w - 1)), 0, w - 1)
-                y = np.clip(int((1 - v) * (h - 1)), 0, h - 1)
-                c = img[y, x]
-                if c.shape[0] == 3:
-                    c = np.append(c, 1.0)
-                return c
-
-            num_uv = len(uv)
-            num_vertices = len(mesh.vertices)
-            num_faces = len(mesh.faces)
-
-            v_colors = np.zeros((num_vertices, 4), dtype=np.float32)
-            counts = np.zeros(num_vertices, dtype=np.int32)
-
-            if num_uv == num_vertices:
-                for vert_idx in range(num_vertices):
-                    u, v = uv[vert_idx]
-                    v_colors[vert_idx] = sample_color(u, v)
-            elif num_uv == num_faces * 3:
-                for face_idx, face in enumerate(mesh.faces):
-                    for corner in range(3):
-                        vert_idx = face[corner]
-                        uv_idx = face_idx * 3 + corner
-                        u, v = uv[uv_idx]
-                        v_colors[vert_idx] += sample_color(u, v)
-                        counts[vert_idx] += 1
-                for i in range(num_vertices):
-                    if counts[i] > 0:
-                        v_colors[i] /= counts[i]
-                    else:
-                        v_colors[i] = [1, 1, 1, 1]
-            else:
-                return
-
-            mesh.visual.vertex_colors = v_colors
-            return
 
         # Simple material fallback
         material = getattr(visual, 'material', None)
         if material is not None:
-            base = getattr(material, 'baseColor', None) or getattr(material, 'diffuse', [1.0, 1.0, 1.0, 1.0])
+            # Try various material color attributes
+            base = getattr(material, 'baseColor', None)
+            if base is None:
+                base = getattr(material, 'main_color', None)
+            if base is None:
+                base = getattr(material, 'baseColorFactor', None)
+            if base is None:
+                base = getattr(material, 'diffuse', [1.0, 1.0, 1.0, 1.0])
+                
             base = np.array(base, dtype=np.float32)
+            # Normalize if needed (trimesh often uses 0-255 for main_color)
+            if base.max() > 1.0:
+                base /= 255.0
+                
             if len(base) == 3:
                 base = np.append(base, 1.0)
             colors = np.full((len(mesh.vertices), 4), base, dtype=np.float32)
             mesh.visual.vertex_colors = colors
+
+    def _is_valid_texture(self, img_arr: np.ndarray) -> bool:
+        """Check if a texture is valid (not a placeholder or empty)."""
+        if img_arr is None or img_arr.size == 0:
+            return False
+
+        # Check if all pixels are the same (placeholder texture)
+        if len(img_arr.shape) >= 3:
+            pixels = img_arr.reshape(-1, img_arr.shape[-1])
+        else:
+            pixels = img_arr.reshape(-1)
+
+        unique_pixels = np.unique(pixels, axis=0)
+
+        # If only 1-2 unique colors and one is transparent, it's likely a placeholder
+        if len(unique_pixels) <= 2:
+            # Check if any pixel is fully transparent
+            if len(unique_pixels.shape) > 1 and unique_pixels.shape[-1] >= 4:
+                for pixel in unique_pixels:
+                    if pixel[-1] == 0:  # Alpha is 0
+                        return False
+            # Check if it's a solid color placeholder (very small texture with uniform color)
+            if img_arr.shape[0] <= 16 or img_arr.shape[1] <= 16:
+                return False
+
+        # Check if the texture is mostly transparent (e.g. broken or empty texture)
+        if len(img_arr.shape) >= 3 and img_arr.shape[-1] == 4:
+            alpha_channel = img_arr[..., 3]
+            # If more than 90% of the texture is fully transparent, consider it invalid
+            if (alpha_channel == 0).mean() > 0.9:
+                return False
+
+        return True
+
+    def _generate_vertex_colors_from_texture(self, mesh, img_arr: np.ndarray, uv: np.ndarray):
+        """Generate vertex colors by sampling the texture at UV coordinates."""
+        if img_arr.ndim == 2:
+            img_arr = np.stack([img_arr] * 3, axis=2)
+
+        img = img_arr.astype(np.float32) / 255.0
+        h, w = img.shape[:2]
+
+        def sample_color(u, v):
+            u = u % 1.0
+            v = v % 1.0
+            x = np.clip(int(u * (w - 1)), 0, w - 1)
+            y = np.clip(int((1 - v) * (h - 1)), 0, h - 1)
+            c = img[y, x]
+            if c.shape[0] == 3:
+                c = np.append(c, 1.0)
+            # Force alpha to 1.0 to prevent invisible vertices from texture alpha
+            c[3] = 1.0
+            return c
+
+        num_uv = len(uv)
+        num_vertices = len(mesh.vertices)
+        num_faces = len(mesh.faces)
+
+        v_colors = np.zeros((num_vertices, 4), dtype=np.float32)
+        counts = np.zeros(num_vertices, dtype=np.int32)
+
+        if num_uv == num_vertices:
+            for vert_idx in range(num_vertices):
+                u, v = uv[vert_idx]
+                v_colors[vert_idx] = sample_color(u, v)
+        elif num_uv == num_faces * 3:
+            for face_idx, face in enumerate(mesh.faces):
+                for corner in range(3):
+                    vert_idx = face[corner]
+                    uv_idx = face_idx * 3 + corner
+                    u, v = uv[uv_idx]
+                    v_colors[vert_idx] += sample_color(u, v)
+                    counts[vert_idx] += 1
+            for i in range(num_vertices):
+                if counts[i] > 0:
+                    v_colors[i] /= counts[i]
+                else:
+                    v_colors[i] = [1, 1, 1, 1]
+        else:
+            # UV count doesn't match expected layout, use default white
+            v_colors = np.ones((num_vertices, 4), dtype=np.float32)
+
+        mesh.visual.vertex_colors = v_colors
 
     # Dirty flag helper (marks transform dirty + colliders for runtime update)
     # =========================================================================

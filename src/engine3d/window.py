@@ -363,7 +363,13 @@ class Window3D:
         
         # Scene elements
         self.objects: List[GameObject] = []
+        
+        # Default camera for window-only mode
+        self._camera_go = GameObject("Default Camera")
         self.camera = Camera3D()
+        self._camera_go.add_component(self.camera)
+        self._camera_go.transform.position = (0, 5, 10)
+        self._camera_go.transform.look_at((0, 0, 0))
         
         # Scene system
         self._current_scene: Optional['Scene3D'] = None
@@ -1254,98 +1260,98 @@ class Window3D:
         self._collider_program['color'].value = tuple(color)
 
         # Use first collider (normal case; supports multi via get_components)
-        coll = obj.get_component(Collider)
-        if not coll:
-            return
-        t = coll.type
+        for coll in obj.get_components(Collider):
+            if not coll:
+                return
+            t = coll.type
 
-        if t == ColliderType.CUBE:
-            # Call collider methods (no world_* on Object3D)
-            center, axes, extents = coll.get_world_obb() or (np.zeros(3), np.eye(3), np.ones(3))
+            if t == ColliderType.CUBE:
+                # Call collider methods (no world_* on Object3D)
+                center, axes, extents = coll.get_world_obb() or (np.zeros(3), np.eye(3), np.ones(3))
 
-            S = np.array([
-                [extents[0], 0, 0, 0],
-                [0, extents[1], 0, 0],
-                [0, 0, extents[2], 0],
-                [0, 0, 0, 1],
-            ], dtype=np.float32)
+                S = np.array([
+                    [extents[0], 0, 0, 0],
+                    [0, extents[1], 0, 0],
+                    [0, 0, extents[2], 0],
+                    [0, 0, 0, 1],
+                ], dtype=np.float32)
 
-            R4 = np.eye(4, dtype=np.float32)
-            R4[:3, :3] = axes
+                R4 = np.eye(4, dtype=np.float32)
+                R4[:3, :3] = axes
 
-            T = np.array([
-                [1, 0, 0, 0],
-                [0, 1, 0, 0],
-                [0, 0, 1, 0],
-                [center[0], center[1], center[2], 1],
-            ], dtype=np.float32)
+                T = np.array([
+                    [1, 0, 0, 0],
+                    [0, 1, 0, 0],
+                    [0, 0, 1, 0],
+                    [center[0], center[1], center[2], 1],
+                ], dtype=np.float32)
 
-            model = S @ R4 @ T
+                model = S @ R4 @ T
 
-            vao = self._cube_vao
+                vao = self._cube_vao
 
-        elif t == ColliderType.SPHERE:
-            center, radius = coll.get_world_sphere() or (np.zeros(3), 1.0)
+            elif t == ColliderType.SPHERE:
+                center, radius = coll.get_world_sphere() or (np.zeros(3), 1.0)
 
-            model = np.eye(4, dtype=np.float32)
-            model[:3, :3] *= radius
-            model[3, :3] = center
+                model = np.eye(4, dtype=np.float32)
+                model[:3, :3] *= radius
+                model[3, :3] = center
 
-            vao = self._sphere_vao
+                vao = self._sphere_vao
 
-        elif t == ColliderType.CYLINDER:
-            center, radius, half_h = coll.get_world_cylinder() or (np.zeros(3), 1.0, 1.0)
-            _, axes, _ = coll.get_world_obb() or (np.zeros(3), np.eye(3), np.ones(3))
+            elif t == ColliderType.CYLINDER:
+                center, radius, half_h = coll.get_world_cylinder() or (np.zeros(3), 1.0, 1.0)
+                _, axes, _ = coll.get_world_obb() or (np.zeros(3), np.eye(3), np.ones(3))
 
-            S = np.array([
-                [radius, 0, 0, 0],
-                [0, half_h, 0, 0],
-                [0, 0, radius, 0],
-                [0, 0, 0, 1],
-            ], dtype=np.float32)
+                S = np.array([
+                    [radius, 0, 0, 0],
+                    [0, half_h, 0, 0],
+                    [0, 0, radius, 0],
+                    [0, 0, 0, 1],
+                ], dtype=np.float32)
 
-            R4 = np.eye(4, dtype=np.float32)
-            R4[:3, :3] = axes
+                R4 = np.eye(4, dtype=np.float32)
+                R4[:3, :3] = axes
 
-            T = np.array([
-                [1, 0, 0, 0],
-                [0, 1, 0, 0],
-                [0, 0, 1, 0],
-                [center[0], center[1], center[2], 1],
-            ], dtype=np.float32)
+                T = np.array([
+                    [1, 0, 0, 0],
+                    [0, 1, 0, 0],
+                    [0, 0, 1, 0],
+                    [center[0], center[1], center[2], 1],
+                ], dtype=np.float32)
 
-            model = S @ R4 @ T
+                model = S @ R4 @ T
 
-            vao = self._cylinder_vao
-            
-        elif t == ColliderType.MESH:
-            # Fallback to drawing OBB for Mesh colliders
-            center, axes, extents = coll.get_world_obb() or (np.zeros(3), np.eye(3), np.ones(3))
+                vao = self._cylinder_vao
+                
+            elif t == ColliderType.MESH:
+                # Fallback to drawing OBB for Mesh colliders
+                center, axes, extents = coll.get_world_obb() or (np.zeros(3), np.eye(3), np.ones(3))
 
-            S = np.array([
-                [extents[0], 0, 0, 0],
-                [0, extents[1], 0, 0],
-                [0, 0, extents[2], 0],
-                [0, 0, 0, 1],
-            ], dtype=np.float32)
+                S = np.array([
+                    [extents[0], 0, 0, 0],
+                    [0, extents[1], 0, 0],
+                    [0, 0, extents[2], 0],
+                    [0, 0, 0, 1],
+                ], dtype=np.float32)
 
-            R4 = np.eye(4, dtype=np.float32)
-            R4[:3, :3] = axes
+                R4 = np.eye(4, dtype=np.float32)
+                R4[:3, :3] = axes
 
-            T = np.array([
-                [1, 0, 0, 0],
-                [0, 1, 0, 0],
-                [0, 0, 1, 0],
-                [center[0], center[1], center[2], 1],
-            ], dtype=np.float32)
+                T = np.array([
+                    [1, 0, 0, 0],
+                    [0, 1, 0, 0],
+                    [0, 0, 1, 0],
+                    [center[0], center[1], center[2], 1],
+                ], dtype=np.float32)
 
-            model = S @ R4 @ T
+                model = S @ R4 @ T
 
-            vao = self._cube_vao
+                vao = self._cube_vao
 
-        mvp = model @ view @ proj
-        self._collider_program['mvp'].write(mvp.tobytes())
-        vao.render(moderngl.LINES)
+            mvp = model @ view @ proj
+            self._collider_program['mvp'].write(mvp.tobytes())
+            vao.render(moderngl.LINES)
 
     # =========================================================================
     # Rendering

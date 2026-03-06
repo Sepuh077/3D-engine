@@ -40,6 +40,10 @@ class PlayerMovement(Script):
         super().__init__()
         self.speed = speed
 
+    def start(self):
+        super().start()
+        self.rb = self.game_object.get_component(Rigidbody)
+
     def update(self):
         if not self.game_object:
             return
@@ -51,7 +55,7 @@ class PlayerMovement(Script):
 
         delta_time = Time.delta_time
         dx = dy = dz = 0.0
-        step = self.speed * delta_time
+        step = self.speed
 
         if window.is_key_pressed(Keys.W) or window.is_key_pressed(Keys.UP):
             dz -= step
@@ -61,13 +65,17 @@ class PlayerMovement(Script):
             dx -= step
         if window.is_key_pressed(Keys.D) or window.is_key_pressed(Keys.RIGHT):
             dx += step
-        if window.is_key_pressed(Keys.SPACE):
-            dy += step
+        # if window.is_key_pressed(Keys.SPACE):
+        #     dy += step
         if window.is_key_pressed(Keys.L):
             self.game_object.transform.scale += 0.1
+        
+        self.rb.velocity[0] = dx
+        self.rb.velocity[2] = dz
+        print(self.rb.velocity)
 
-        if dx or dy or dz:
-            self.game_object.transform.move(dx, dy, dz)
+        # if dx or dy or dz:
+        #     self.game_object.transform.move(dx, dy, dz)
 
 
 class SerializationScene(Scene3D):
@@ -95,9 +103,9 @@ class SerializationScene(Scene3D):
             self.remove_object(self.player)
         
         self.player = self.load_object("example/stairs_modular_right.obj", color=Color.BLUE)
-        self.player.transform.position = (0, 0.5, 0)
+        self.player.transform.position = (0, 2, 0)
         self.player.name = "Player"
-        self.player.add_component(Rigidbody())
+        self.player.add_component(Rigidbody(use_gravity=False))
         self.player.add_component(BoxCollider())
         self.player.add_component(PlayerMovement(speed=5.0))
         
@@ -108,6 +116,7 @@ class SerializationScene(Scene3D):
         floor = self.add_object(create_plane(30, 30, color=Color.DARK_GRAY))
         floor.transform.position = (0, -0.5, 0)
         floor.add_component(Rigidbody(is_static=True))
+        floor.add_component(BoxCollider())
         floor.name = "Floor"
         
         # Some random cubes
@@ -129,8 +138,8 @@ class SerializationScene(Scene3D):
         # Camera follows player
         if self.player:
             px, py, pz = self.player.transform.position
-            self.camera.target = (px, py, pz)
             self.camera.position = (px, py + 15, pz + 20)
+            self.camera.target = (px, py, pz)
     
     def _show_message(self, text: str, duration: float = 3.0):
         """Show a message on screen."""

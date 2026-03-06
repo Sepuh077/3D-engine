@@ -43,10 +43,56 @@ class Scene3D:
         """Initialize the scene."""
         self.window: Optional['Window3D'] = None
         self.objects: List[GameObject] = []
-        self.camera = Camera3D()
+        
+        # Camera setup
+        self._cameras: List[Camera3D] = []
+        self._main_camera: Optional[Camera3D] = None
+        
+        # Create default main camera
+        cam_obj = GameObject("Main Camera")
+        camera = Camera3D()
+        cam_obj.add_component(camera)
+        cam_obj.transform.position = (0, 5, 10)
+        cam_obj.transform.look_at((0, 0, 0))
+        self.add_object(cam_obj)
+        self._main_camera = camera
+        
         self._setup_done = False
         self.canvas = UIManager(self)  # UI canvas for this scene
     
+    @property
+    def main_camera(self) -> Camera3D:
+        """Get the main camera."""
+        if self._main_camera:
+            return self._main_camera
+        # If no main camera, find first camera
+        if self._cameras:
+            return self._cameras[0]
+        # Fallback (shouldn't happen if initialized correctly)
+        cam = Camera3D()
+        return cam
+
+    @main_camera.setter
+    def main_camera(self, camera: Camera3D):
+        """Set the main camera."""
+        if camera in self._cameras:
+            self._main_camera = camera
+        else:
+            # Maybe auto-add?
+            if camera.game_object and camera.game_object in self.objects:
+                self._cameras.append(camera)
+                self._main_camera = camera
+
+    @property
+    def camera(self) -> Camera3D:
+        """Alias for main_camera (backward compatibility)."""
+        return self.main_camera
+    
+    @camera.setter
+    def camera(self, value: Camera3D):
+        """Set main camera (backward compatibility)."""
+        self.main_camera = value
+
     @property
     def light(self) -> Optional[DirectionalLight3D]:
         """Get the first DirectionalLight3D component in the scene, or None if none exists."""
@@ -104,6 +150,13 @@ class Scene3D:
         # Start scripts on the new object
         go.start_scripts()
         
+        # Register cameras
+        for cam in go.get_components(Camera3D):
+            if cam not in self._cameras:
+                self._cameras.append(cam)
+                if self._main_camera is None:
+                    self._main_camera = cam
+        
         return go
     
     def remove_object(self, obj: GameObject):
@@ -115,6 +168,14 @@ class Scene3D:
             else:
                 if obj.get_component(Object3D):
                     obj.get_component(Object3D)._release_gpu()
+            
+            # Unregister cameras
+            for cam in obj.get_components(Camera3D):
+                if cam in self._cameras:
+                    self._cameras.remove(cam)
+                    if self._main_camera == cam:
+                        self._main_camera = self._cameras[0] if self._cameras else None
+
             self.objects.remove(obj)
     
     def clear_objects(self):
@@ -127,6 +188,8 @@ class Scene3D:
                 if obj.get_component(Object3D):
                     obj.get_component(Object3D)._release_gpu()
         self.objects.clear()
+        self._cameras.clear()
+        self._main_camera = None
     
     def get_objects_by_name(self, name: str) -> List[GameObject]:
         """Get all objects with a specific name."""
