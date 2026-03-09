@@ -304,6 +304,10 @@ class Scene3D:
         """
         pass
 
+    def on_resize(self, width: int, height: int):
+        """Called when the window is resized."""
+        pass
+
     # =========================================================================
     # Serialization
     # =========================================================================

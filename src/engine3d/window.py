@@ -280,7 +280,9 @@ class Window3D:
                  title: str = "3D Engine",
                  resizable: bool = False,
                  vsync: bool = True,
-                 background_color: ColorType = (0.1, 0.1, 0.15)):
+                 background_color: ColorType = (0.1, 0.1, 0.15),
+                 use_pygame_window: bool = True,
+                 use_pygame_events: bool = True):
         """
         Initialize the window.
         
@@ -301,18 +303,35 @@ class Window3D:
         self.background_color = background_color
         
         # Initialize pygame
+        # When embedded, SDL_WINDOWID is set by the host.
+        
+        self._use_pygame_window = use_pygame_window
+        self._use_pygame_events = use_pygame_events and use_pygame_window
+
         pygame.init()
-        
-        # Create OpenGL window
-        flags = pygame.OPENGL | pygame.DOUBLEBUF
-        if resizable:
-            flags |= pygame.RESIZABLE
-        
-        pygame.display.set_mode((width, height), flags)
-        pygame.display.set_caption(title)
-        
+
+        if self._use_pygame_window:
+            flags = pygame.OPENGL | pygame.DOUBLEBUF
+            if resizable:
+                flags |= pygame.RESIZABLE
+
+            pygame.display.set_mode((width, height), flags)
+            pygame.display.set_caption(title)
+            pygame.event.set_allowed([
+                pygame.QUIT,
+                pygame.KEYDOWN,
+                pygame.KEYUP,
+                pygame.MOUSEBUTTONDOWN,
+                pygame.MOUSEBUTTONUP,
+                pygame.MOUSEMOTION,
+                pygame.VIDEORESIZE,
+            ])
+
         # Create ModernGL context
-        self._ctx = moderngl.create_context()
+        try:
+            self._ctx = moderngl.create_context(require=330)
+        except Exception:
+            self._ctx = moderngl.create_context()
         self._ctx.enable(moderngl.DEPTH_TEST | moderngl.BLEND)
         self._ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
         
@@ -370,7 +389,14 @@ class Window3D:
         self._camera_go.add_component(self.camera)
         self._camera_go.transform.position = (0, 5, 10)
         self._camera_go.transform.look_at((0, 0, 0))
-        
+
+        # Editor overlay options
+        self.show_editor_overlays = False
+        self.editor_selected_object: Optional[GameObject] = None
+        self.editor_show_camera = True
+        self.editor_show_axis = True
+        self.editor_show_gizmo = True
+
         # Scene system
         self._current_scene: Optional['Scene3D'] = None
         
@@ -934,6 +960,25 @@ class Window3D:
         if self.show_profiler and self._profiler_text:
             title = f"{title} | {self._profiler_text}"
         pygame.display.set_caption(title)
+
+    def project_point(self, world_pos: Tuple[float, float, float]) -> Optional[Tuple[int, int, float]]:
+        """
+        Project a 3D world position to screen space.
+
+        Returns (x, y, depth) in screen pixels, or None if behind camera.
+        """
+        camera = self._current_scene.camera if self._current_scene else self.camera
+        view = camera.get_view_matrix()
+        projection = camera.get_projection_matrix(self.aspect)
+        vec = np.array([world_pos[0], world_pos[1], world_pos[2], 1.0], dtype=np.float32)
+        clip = vec @ view @ projection
+        w = clip[3]
+        if w <= 0.0:
+            return None
+        ndc = clip[:3] / w
+        x = int((ndc[0] + 1.0) * 0.5 * self.width)
+        y = int((1.0 - ndc[1]) * 0.5 * self.height)
+        return (x, y, ndc[2])
     
     # =========================================================================
     # Input state
@@ -1010,13 +1055,24 @@ class Window3D:
     
     def on_resize(self, width: int, height: int):
         """Called when the window is resized. Recreates 2D overlay."""
-        self.width = width
-        self.height = height
+        self.width = max(1, width)
+        self.height = max(1, height)
         # Recreate 2D surface and texture
-        self._2d_surface = pygame.Surface((width, height), pygame.SRCALPHA)
+        self._2d_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
         if hasattr(self, '_2d_texture'):
             self._2d_texture.release()
-            self._2d_texture = self._ctx.texture((width, height), 4)
+            self._2d_texture = self._ctx.texture((self.width, self.height), 4)
+        if hasattr(self, '_ctx'):
+            self._ctx.viewport = (0, 0, self.width, self.height)
+
+    def bind_context(self):
+        """Ensure this window's GL context is active before rendering."""
+        if self._use_pygame_window:
+            return
+        try:
+            self._ctx.use()
+        except Exception:
+            pass
     
     # =========================================================================
     # 2D drawing (shapes, text, UI overlay)
@@ -1362,6 +1418,8 @@ class Window3D:
         r, g, b = self.background_color
         self._ctx.clear(r, g, b)
 
+        self.bind_context()
+
         # Clear 2D overlay surface for new frame (draws happen in on_draw)
         self._2d_surface.fill((0, 0, 0, 0))
 
@@ -1550,18 +1608,134 @@ class Window3D:
             self._current_scene.on_draw()
         self.on_draw()
 
+        if self.show_editor_overlays:
+            self._draw_editor_overlays()
+
         # Render 2D overlay on top (after all 3D and custom draws)
         self._render_2d_overlay()
 
-        pygame.display.flip()
+        if self._use_pygame_window:
+            pygame.display.flip()
 
     
+    def _draw_editor_overlays(self):
+        camera = self._current_scene.camera if self._current_scene else self.camera
+        if self.editor_show_axis:
+            self._draw_editor_axis(camera)
+        if self.editor_show_camera and camera and camera.game_object:
+            self._draw_editor_camera(camera)
+        if self.editor_show_gizmo and self.editor_selected_object:
+            self._draw_editor_gizmo(self.editor_selected_object)
+        self._draw_editor_colliders()
+
+    def _draw_editor_colliders(self):
+        for obj in self._active_objects():
+            if obj.get_components(Collider):
+                self.draw_collider(obj, color=(1.0, 0.0, 0.0), line_width=1.5)
+
+    def _draw_editor_axis(self, camera: Camera3D):
+        origin = (0.0, 0.0, 0.0)
+        axis_length = 1.5
+        axis_points = {
+            "X": (axis_length, 0.0, 0.0),
+            "Y": (0.0, axis_length, 0.0),
+            "Z": (0.0, 0.0, axis_length),
+        }
+        axis_colors = {
+            "X": (1.0, 0.3, 0.3),
+            "Y": (0.3, 1.0, 0.3),
+            "Z": (0.3, 0.3, 1.0),
+        }
+        origin_screen = self.project_point(origin)
+        if not origin_screen:
+            return
+        for axis, target in axis_points.items():
+            target_screen = self.project_point(target)
+            if not target_screen:
+                continue
+            self.draw_line(origin_screen[:2], target_screen[:2], axis_colors[axis], width=2, aa=True)
+            label_pos = (target_screen[0] + 6, target_screen[1] + 4)
+            self.draw_text(axis, label_pos[0], label_pos[1], axis_colors[axis], font_size=14)
+
+    def _draw_editor_camera(self, camera: Camera3D):
+        cam_go = camera.game_object
+        cam_pos = cam_go.transform.world_position
+        origin = self.project_point(cam_pos)
+        if not origin:
+            return
+        self.draw_circle(origin[0], origin[1], 6, (1.0, 0.9, 0.2), border_width=2, aa=True)
+        self.draw_text("Camera", origin[0] + 8, origin[1] - 12, (1.0, 0.9, 0.2), font_size=14)
+
+        forward = cam_go.transform.forward
+        right = cam_go.transform.right
+        up = cam_go.transform.up
+
+        near = camera.near
+        far = min(camera.far, 6.0)
+        fov_rad = np.radians(camera.fov)
+        half_near = np.tan(fov_rad * 0.5) * near
+        half_far = np.tan(fov_rad * 0.5) * far
+
+        near_center = cam_pos + forward * near
+        far_center = cam_pos + forward * far
+
+        near_corners = [
+            near_center + right * half_near + up * half_near,
+            near_center - right * half_near + up * half_near,
+            near_center - right * half_near - up * half_near,
+            near_center + right * half_near - up * half_near,
+        ]
+        far_corners = [
+            far_center + right * half_far + up * half_far,
+            far_center - right * half_far + up * half_far,
+            far_center - right * half_far - up * half_far,
+            far_center + right * half_far - up * half_far,
+        ]
+
+        for i in range(4):
+            n0 = self.project_point(tuple(near_corners[i]))
+            n1 = self.project_point(tuple(near_corners[(i + 1) % 4]))
+            f0 = self.project_point(tuple(far_corners[i]))
+            f1 = self.project_point(tuple(far_corners[(i + 1) % 4]))
+            if n0 and n1:
+                self.draw_line(n0[:2], n1[:2], (1.0, 0.9, 0.2), width=1, aa=True)
+            if f0 and f1:
+                self.draw_line(f0[:2], f1[:2], (1.0, 0.9, 0.2), width=1, aa=True)
+            if n0 and f0:
+                self.draw_line(n0[:2], f0[:2], (1.0, 0.9, 0.2), width=1, aa=True)
+
+    def _draw_editor_gizmo(self, obj: GameObject):
+        origin = self.project_point(tuple(obj.transform.world_position))
+        if not origin:
+            return
+        gizmo_length = 1.0
+        axes = {
+            "X": obj.transform.right,
+            "Y": obj.transform.up,
+            "Z": obj.transform.forward,
+        }
+        colors = {
+            "X": (1.0, 0.2, 0.2),
+            "Y": (0.2, 1.0, 0.2),
+            "Z": (0.2, 0.6, 1.0),
+        }
+        for axis, direction in axes.items():
+            endpoint = obj.transform.world_position + direction * gizmo_length
+            end_screen = self.project_point(tuple(endpoint))
+            if not end_screen:
+                continue
+            self.draw_line(origin[:2], end_screen[:2], colors[axis], width=3, aa=True)
+            self.draw_circle(end_screen[0], end_screen[1], 4, colors[axis], border_width=0, aa=True)
+            self.draw_text(axis, end_screen[0] + 6, end_screen[1] + 4, colors[axis], font_size=12)
+
     # =========================================================================
     # Event handling
     # =========================================================================
     
     def _handle_events(self):
         """Process pygame events."""
+        if not self._use_pygame_events:
+            return
         for event in pygame.event.get():
             # Pass to scene's canvas UI first
             if self._current_scene and self._current_scene.canvas.process_pygame_event(event):
@@ -1630,7 +1804,52 @@ class Window3D:
     # =========================================================================
     # Main loop
     # =========================================================================
-    
+
+    def start(self, fps: int = 60):
+        """Initialize the window for manual ticking or run()."""
+        self._fps = fps
+        if not self._setup_done:
+            self.setup()
+            self._setup_done = True
+
+        for obj in self._active_objects():
+            obj.start_scripts()
+
+        self._running = True
+
+    def tick(self, fps: Optional[int] = None, simulate: bool = True) -> bool:
+        """Advance one frame. Returns False when closed."""
+        if fps is not None:
+            self._fps = fps
+        if not self._running:
+            self.start(self._fps)
+
+        raw_dt = self._clock.tick(self._fps) / 1000.0
+        self._delta_time = raw_dt
+        Time.delta_time = raw_dt * Time.scale
+
+        self._handle_events()
+
+        if simulate:
+            if self._current_scene:
+                self._current_scene.on_update()
+            self.on_update()
+
+            for obj in self._active_objects():
+                obj.update()
+
+            if self._current_scene:
+                self._current_scene.canvas.update(self._delta_time)
+
+            self._process_collisions()
+
+            for obj in self._active_objects():
+                obj.update_end_of_frame()
+
+        self._render()
+
+        return self._running
+
     def run(self, fps: int = 60):
         """
         Start the main loop.
@@ -1638,56 +1857,13 @@ class Window3D:
         Args:
             fps: Target frames per second (default 60)
         """
-        self._fps = fps
-        self._running = True
-        
-        # Call setup if not done
-        if not self._setup_done:
-            self.setup()
-            self._setup_done = True
+        self.start(fps)
 
-        # Start scripts on all objects after setup
-        for obj in self._active_objects():
-            obj.start_scripts()
-        
-        # Main loop
         while self._running:
-            # Calculate delta time
-            raw_dt = self._clock.tick(fps) / 1000.0
-            self._delta_time = raw_dt
-            Time.delta_time = raw_dt * Time.scale
-            
-            # Handle events
-            self._handle_events()
-            
-            # Update
-            if self._current_scene:
-                self._current_scene.on_update()
-            self.on_update()
+            self.tick(fps)
 
-            for obj in self._active_objects():
-                obj.update()
-            
-            # Update scene's canvas UI
-            if self._current_scene:
-                self._current_scene.canvas.update(self._delta_time)
-
-            # Auto collision detection + events + resolution (after user update)            
-            self._process_collisions()
-            
-            # End-of-frame coroutine phase
-            for obj in self._active_objects():
-                obj.update_end_of_frame()
-            
-            # Render
-            self._render()
-            
-            # Update title with FPS (optional)
-            # pygame.display.set_caption(f"{self.title} - {self.fps:.1f} FPS")
-        
-        # Cleanup
         self._cleanup()
-    
+
     def close(self):
         """Close the window and exit."""
         self._running = False
