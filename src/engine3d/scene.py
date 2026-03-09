@@ -330,6 +330,20 @@ class Scene3D:
         return cls._from_scene_dict(data)
 
     def _to_scene_dict(self) -> dict:
+        # Don't serialize system objects (Main Camera, Directional Light)
+        # to avoid duplicates when restoring
+        system_objects = {"Main Camera", "Directional Light"}
+        
+        # Save directional light settings
+        light_data = {}
+        if self.light:
+            light_data = {
+                "direction": self.light.direction.tolist() if hasattr(self.light.direction, 'tolist') else list(self.light.direction),
+                "color": self.light.color.tolist() if hasattr(self.light.color, 'tolist') else list(self.light.color),
+                "intensity": self.light.intensity,
+                "ambient": self.light.ambient,
+            }
+        
         return {
             "camera": {
                 "position": self.camera.position.tolist(),
@@ -338,34 +352,49 @@ class Scene3D:
                 "near": self.camera.near,
                 "far": self.camera.far,
             },
-            "objects": [obj._to_prefab_dict() for obj in self.objects],
+            "light": light_data,
+            "objects": [obj._to_prefab_dict() for obj in self.objects if obj.name not in system_objects],
         }
+
+    def clone(self) -> "Scene3D":
+        """
+        Create a deep copy of this scene.
+        """
+        data = self._to_scene_dict()
+        new_scene = self.__class__._from_scene_dict(data)
+        # Copy editor specific labels if any
+        if hasattr(self, 'editor_label'):
+            new_scene.editor_label = self.editor_label
+        return new_scene
 
     @classmethod
     def _from_scene_dict(cls, data: dict) -> "Scene3D":
         scene = cls()
         camera_data = data.get("camera", {})
         if camera_data:
+            # Update the existing Main Camera with saved settings
             scene.camera.position = camera_data.get("position", scene.camera.position)
             scene.camera.target = camera_data.get("target", scene.camera.target)
             scene.camera.fov = camera_data.get("fov", scene.camera.fov)
             scene.camera.near = camera_data.get("near", scene.camera.near)
             scene.camera.far = camera_data.get("far", scene.camera.far)
 
-        for obj_data in data.get("objects", []):
-            scene.objects.append(GameObject._from_prefab_dict(obj_data))
-
+        # Update the existing Directional Light with saved settings if available
         light_data = data.get("light", {})
         if light_data:
-            # Handle legacy light data by creating a new GameObject
-            light_obj = GameObject("Legacy Light")
-            light = DirectionalLight3D()
-            light.direction = light_data.get("direction", light.direction)
-            light.color = light_data.get("color", light.color)
-            light.intensity = light_data.get("intensity", light.intensity)
-            light.ambient = light_data.get("ambient", light.ambient)
-            light_obj.add_component(light)
-            scene.add_object(light_obj)
+            # Find the existing Directional Light and update it
+            for obj in scene.objects:
+                light = obj.get_component(DirectionalLight3D)
+                if light:
+                    light.direction = light_data.get("direction", light.direction)
+                    light.color = light_data.get("color", light.color)
+                    light.intensity = light_data.get("intensity", light.intensity)
+                    light.ambient = light_data.get("ambient", light.ambient)
+                    break
+
+        # Add user-created objects
+        for obj_data in data.get("objects", []):
+            scene.objects.append(GameObject._from_prefab_dict(obj_data))
 
         for obj in scene.objects:
             obj.start_scripts()

@@ -396,6 +396,7 @@ class Window3D:
         self.editor_show_camera = True
         self.editor_show_axis = True
         self.editor_show_gizmo = True
+        self.active_camera_override: Optional[Camera3D] = None
 
         # Scene system
         self._current_scene: Optional['Scene3D'] = None
@@ -1429,15 +1430,17 @@ class Window3D:
         # Clear 2D overlay surface for new frame (draws happen in on_draw)
         self._2d_surface.fill((0, 0, 0, 0))
 
-        # ------------------------------------------------------------
-        # Camera / view setup
-        # ------------------------------------------------------------
+        camera = self.active_camera_override
+        if not camera:
+            camera = self._current_scene.camera if self._current_scene else self.camera
+
+        if not camera:
+            return
+
         if self._current_scene:
-            camera = self._current_scene.camera
             light = self._current_scene.light
             objects = self._current_scene.objects
         else:
-            camera = self.camera
             light = self.light
             objects = self.objects
 
@@ -1625,11 +1628,17 @@ class Window3D:
 
     
     def _draw_editor_overlays(self):
-        camera = self._current_scene.camera if self._current_scene else self.camera
+        active_camera = self.active_camera_override or (self._current_scene.camera if self._current_scene else self.camera)
+        
         if self.editor_show_axis:
-            self._draw_editor_axis(camera)
-        if self.editor_show_camera and camera and camera.game_object:
-            self._draw_editor_camera(camera)
+            self._draw_editor_axis(active_camera)
+            
+        if self.editor_show_camera and self._current_scene:
+            for obj in self._current_scene.objects:
+                for cam in obj.get_components(Camera3D):
+                    if cam != active_camera:
+                        self._draw_editor_camera(cam)
+                        
         if self.editor_show_gizmo and self.editor_selected_object:
             self._draw_editor_gizmo(self.editor_selected_object)
         self._draw_editor_colliders()
@@ -1665,50 +1674,75 @@ class Window3D:
 
     def _draw_editor_camera(self, camera: Camera3D):
         cam_go = camera.game_object
+        if not cam_go: return
         cam_pos = cam_go.transform.world_position
         origin = self.project_point(cam_pos)
         if not origin:
             return
-        self.draw_circle(origin[0], origin[1], 6, (1.0, 0.9, 0.2), border_width=2, aa=True)
-        self.draw_text("Camera", origin[0] + 8, origin[1] - 12, (1.0, 0.9, 0.2), font_size=14)
+        
+        color = (1.0, 1.0, 1.0) # White
+        self.draw_circle(origin[0], origin[1], 6, color, border_width=2, aa=True)
+        self.draw_text("Camera", origin[0] + 8, origin[1] - 12, color, font_size=14)
 
         forward = cam_go.transform.forward
         right = cam_go.transform.right
         up = cam_go.transform.up
 
         near = camera.near
-        far = min(camera.far, 6.0)
+        far = min(camera.far, 20.0) # Show a reasonable frustum extent
         fov_rad = np.radians(camera.fov)
-        half_near = np.tan(fov_rad * 0.5) * near
-        half_far = np.tan(fov_rad * 0.5) * far
+        aspect = self.aspect
+        
+        # Calculate half-height and half-width at near and far planes
+        half_height_near = np.tan(fov_rad * 0.5) * near
+        half_width_near = half_height_near * aspect
+        half_height_far = np.tan(fov_rad * 0.5) * far
+        half_width_far = half_height_far * aspect
 
         near_center = cam_pos + forward * near
         far_center = cam_pos + forward * far
 
+        # Near plane corners (correct aspect ratio)
         near_corners = [
-            near_center + right * half_near + up * half_near,
-            near_center - right * half_near + up * half_near,
-            near_center - right * half_near - up * half_near,
-            near_center + right * half_near - up * half_near,
+            near_center + right * half_width_near + up * half_height_near,  # top-right
+            near_center - right * half_width_near + up * half_height_near,  # top-left
+            near_center - right * half_width_near - up * half_height_near,  # bottom-left
+            near_center + right * half_width_near - up * half_height_near,  # bottom-right
         ]
+        # Far plane corners
         far_corners = [
-            far_center + right * half_far + up * half_far,
-            far_center - right * half_far + up * half_far,
-            far_center - right * half_far - up * half_far,
-            far_center + right * half_far - up * half_far,
+            far_center + right * half_width_far + up * half_height_far,     # top-right
+            far_center - right * half_width_far + up * half_height_far,     # top-left
+            far_center - right * half_width_far - up * half_height_far,     # bottom-left
+            far_center + right * half_width_far - up * half_height_far,     # bottom-right
         ]
 
+        # Draw near plane rectangle
         for i in range(4):
             n0 = self.project_point(tuple(near_corners[i]))
             n1 = self.project_point(tuple(near_corners[(i + 1) % 4]))
+            if n0 and n1:
+                self.draw_line(n0[:2], n1[:2], color, width=2, aa=True)
+        
+        # Draw far plane rectangle
+        for i in range(4):
             f0 = self.project_point(tuple(far_corners[i]))
             f1 = self.project_point(tuple(far_corners[(i + 1) % 4]))
-            if n0 and n1:
-                self.draw_line(n0[:2], n1[:2], (1.0, 0.9, 0.2), width=1, aa=True)
             if f0 and f1:
-                self.draw_line(f0[:2], f1[:2], (1.0, 0.9, 0.2), width=1, aa=True)
+                self.draw_line(f0[:2], f1[:2], color, width=1, aa=True)
+        
+        # Draw connecting lines from near to far (frustum edges)
+        for i in range(4):
+            n0 = self.project_point(tuple(near_corners[i]))
+            f0 = self.project_point(tuple(far_corners[i]))
             if n0 and f0:
-                self.draw_line(n0[:2], f0[:2], (1.0, 0.9, 0.2), width=1, aa=True)
+                self.draw_line(n0[:2], f0[:2], color, width=1, aa=True)
+        
+        # Draw forward direction line from camera position
+        forward_point = cam_pos + forward * (near + 0.5)
+        forward_screen = self.project_point(tuple(forward_point))
+        if forward_screen:
+            self.draw_line(origin[:2], forward_screen[:2], color, width=2, aa=True)
 
     def _draw_editor_gizmo(self, obj: GameObject):
         origin = self.project_point(tuple(obj.transform.world_position))

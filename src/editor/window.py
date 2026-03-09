@@ -10,11 +10,70 @@ from PySide6 import QtCore, QtGui, QtWidgets, QtOpenGLWidgets
 from src.engine3d.scene import Scene3D
 from src.engine3d.window import Window3D
 from src.engine3d.gameobject import GameObject
-from src.engine3d.object3d import create_cube, create_sphere, create_plane
+from src.engine3d.object3d import create_cube, create_sphere, create_plane, Object3D
 
 from .selection import EditorSelection
 from .viewport import ViewportWidget
 from .scene import EditorScene
+
+
+class HierarchyTreeWidget(QtWidgets.QTreeWidget):
+    """Custom tree widget that supports drag-drop parenting of GameObjects."""
+    object_parented = QtCore.Signal(object, object)  # (child_obj, parent_obj or None)
+    
+    def __init__(self, editor_window, parent=None):
+        super().__init__(parent)
+        self.editor_window = editor_window
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
+        self.setDropIndicatorShown(True)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
+    
+    def dropEvent(self, event: QtGui.QDropEvent) -> None:
+        """Handle drop event to parent objects."""
+        # Get the item being dragged
+        dragged_item = self.currentItem()
+        if not dragged_item:
+            return
+        
+        # Get the drop target
+        drop_item = self.itemAt(event.position().toPoint())
+        
+        # Find the GameObjects from items
+        dragged_obj = None
+        drop_obj = None
+        
+        for obj, item in self.editor_window._object_items.items():
+            if item is dragged_item:
+                dragged_obj = obj
+            if item is drop_item:
+                drop_obj = obj
+        
+        if not dragged_obj:
+            return
+        
+        # Check for circular parenting (can't drop parent onto its child)
+        if drop_obj and self._is_descendant(dragged_obj, drop_obj):
+            return  # Invalid drop
+        
+        # Emit signal for the parenting operation
+        # If drop_obj is None, it means dropping at root level
+        self.object_parented.emit(dragged_obj, drop_obj)
+        
+        # Accept the event
+        event.acceptProposedAction()
+    
+    def _is_descendant(self, potential_ancestor: GameObject, potential_descendant: GameObject) -> bool:
+        """Check if potential_descendant is a descendant of potential_ancestor."""
+        current = potential_descendant.transform.parent
+        while current:
+            if current.game_object is potential_ancestor:
+                return True
+            current = current.parent
+        return False
+
 
 class EditorWindow(QtWidgets.QMainWindow):
     def __init__(self, project_root: str, parent: Optional[QtWidgets.QWidget] = None) -> None:
@@ -26,10 +85,19 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._selection = EditorSelection()
         self._scene = EditorScene()
         self._window: Optional[Window3D] = None
-        self._scene_auto_objects = {"Main Camera", "Directional Light"}
+        self._scene_auto_objects = set() # Show all objects
         self._object_items: Dict[GameObject, QtWidgets.QTreeWidgetItem] = {}
         self._component_fields: list[QtWidgets.QWidget] = []
         self._components_dirty = True
+
+        # Editor camera (separate from game camera)
+        from src.engine3d.camera import Camera3D
+        self._editor_camera = Camera3D()
+
+        # Play mode state
+        self._playing = False
+        self._paused = False
+        self._original_scene_data = None
 
         # Camera control state
         self._camera_control = {
@@ -74,7 +142,7 @@ class EditorWindow(QtWidgets.QMainWindow):
         self.addDockWidget(QtCore.Qt.DockWidgetArea.BottomDockWidgetArea, self._files_dock)
 
     def _setup_toolbar(self) -> None:
-        toolbar = QtWidgets.QToolBar("Transform", self)
+        toolbar = QtWidgets.QToolBar("Tools", self)
         toolbar.setMovable(False)
         self.addToolBar(QtCore.Qt.ToolBarArea.TopToolBarArea, toolbar)
 
@@ -86,11 +154,20 @@ class EditorWindow(QtWidgets.QMainWindow):
         toolbar.addSeparator()
         self._add_toolbar_button(toolbar, "Z-", lambda: self._nudge_selected((0.0, 0.0, -0.5)))
         self._add_toolbar_button(toolbar, "Z+", lambda: self._nudge_selected((0.0, 0.0, 0.5)))
+        
+        toolbar.addSeparator()
+        self._play_action = self._add_toolbar_button(toolbar, "Play", self._on_play_clicked)
+        self._pause_action = self._add_toolbar_button(toolbar, "Pause", self._on_pause_clicked)
+        self._stop_action = self._add_toolbar_button(toolbar, "Stop", self._on_stop_clicked)
+        
+        self._pause_action.setEnabled(False)
+        self._stop_action.setEnabled(False)
 
-    def _add_toolbar_button(self, toolbar: QtWidgets.QToolBar, label: str, callback) -> None:
+    def _add_toolbar_button(self, toolbar: QtWidgets.QToolBar, label: str, callback) -> QtGui.QAction:
         action = QtGui.QAction(label, self)
         action.triggered.connect(callback)
         toolbar.addAction(action)
+        return action
 
     def _setup_hierarchy_panel(self) -> None:
         panel = QtWidgets.QWidget(self)
@@ -106,13 +183,49 @@ class EditorWindow(QtWidgets.QMainWindow):
         button_row.addWidget(remove_button)
         layout.addLayout(button_row)
 
-        self._hierarchy_tree = QtWidgets.QTreeWidget(panel)
+        self._hierarchy_tree = HierarchyTreeWidget(self, self)
         self._hierarchy_tree.setHeaderLabel("GameObjects")
         self._hierarchy_tree.itemSelectionChanged.connect(self._on_hierarchy_selection)
         self._hierarchy_tree.itemDoubleClicked.connect(self._on_hierarchy_double_click)
+        self._hierarchy_tree.object_parented.connect(self._on_object_parented)
+        
         layout.addWidget(self._hierarchy_tree)
 
         self._hierarchy_dock.setWidget(panel)
+
+    def _on_object_parented(self, child_obj: GameObject, parent_obj: Optional[GameObject]) -> None:
+        """Handle when an object is parented to another via drag-drop."""
+        if not child_obj:
+            return
+        
+        self._viewport.makeCurrent()
+        
+        # Store world position before parenting
+        world_pos = child_obj.transform.world_position
+        world_rot = child_obj.transform.world_rotation
+        world_scale = child_obj.transform.world_scale
+        
+        if parent_obj:
+            # Set parent - this will convert to local automatically
+            child_obj.transform.parent = parent_obj.transform
+            # Preserve world transform
+            child_obj.transform.world_position = world_pos
+            child_obj.transform.world_rotation = world_rot
+            child_obj.transform.world_scale = world_scale
+        else:
+            # Unparent (make root level)
+            if child_obj.transform.parent:
+                child_obj.transform.parent = None
+                # Restore world position
+                child_obj.transform.position = world_pos
+                child_obj.transform.rotation = world_rot
+                child_obj.transform.scale_xyz = world_scale
+        
+        # Refresh the hierarchy tree
+        self._refresh_hierarchy()
+        self._select_object(child_obj)
+        self._viewport.update()
+        self._viewport.doneCurrent()
 
     def _setup_inspector_panel(self) -> None:
         panel = QtWidgets.QWidget(self)
@@ -202,6 +315,7 @@ class EditorWindow(QtWidgets.QMainWindow):
             "Capsule Collider": lambda: self._add_component_to_selected(CapsuleCollider()),
             "Rigidbody": lambda: self._add_component_to_selected(Rigidbody()),
             "Particle System": lambda: self._add_component_to_selected(ParticleSystem()),
+            "Script": self._add_script_component,
         }
 
         for name, callback in actions.items():
@@ -209,6 +323,111 @@ class EditorWindow(QtWidgets.QMainWindow):
             action.triggered.connect(callback)
 
         menu.exec(QtGui.QCursor.pos())
+
+    def _add_script_component(self) -> None:
+        """Open dialog to create a new script component."""
+        from PySide6 import QtWidgets
+
+        # Dialog for script name
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "New Script", "Enter script class name:"
+        )
+        if not ok or not name.strip():
+            return
+
+        script_name = name.strip()
+        # Validate class name (Python identifier)
+        if not script_name.isidentifier():
+            QtWidgets.QMessageBox.warning(
+                self, "Invalid Name", "Script name must be a valid Python identifier."
+            )
+            return
+
+        # File dialog for save location
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save Script",
+            str(self.project_root / f"{script_name}.py"),
+            "Python Files (*.py)"
+        )
+        if not file_path:
+            return
+
+        file_path = Path(file_path)
+
+        # Create the script file
+        try:
+            self._create_script_file(file_path, script_name)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self, "Error", f"Failed to create script file:\n{e}"
+            )
+            return
+
+        # Add the script component to selected object
+        self._load_and_add_script(file_path, script_name)
+
+    def _create_script_file(self, file_path: Path, class_name: str) -> None:
+        """Create a new script file with the template."""
+        script_template = f'''from src.engine3d import Script, Time
+
+
+class {class_name}(Script):
+    """
+    Custom script component.
+    """
+    
+    def start(self):
+        """
+        Called once when the script is first initialized.
+        """
+        pass
+    
+    def update(self):
+        """
+        Called every frame.
+        """
+        pass
+'''
+        file_path.write_text(script_template, encoding="utf-8")
+
+    def _load_and_add_script(self, file_path: Path, class_name: str) -> None:
+        """Dynamically load the script and add it as a component."""
+        import importlib.util
+        import sys
+        from PySide6 import QtWidgets
+
+        try:
+            # Add the project root to sys.path if not already there
+            project_root = str(self.project_root)
+            if project_root not in sys.path:
+                sys.path.insert(0, project_root)
+
+            # Load the module
+            spec = importlib.util.spec_from_file_location(
+                file_path.stem, str(file_path)
+            )
+            if spec is None or spec.loader is None:
+                raise ImportError(f"Could not load script from {file_path}")
+
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[file_path.stem] = module
+            spec.loader.exec_module(module)
+
+            # Get the class from the module
+            if not hasattr(module, class_name):
+                raise AttributeError(f"Script file does not contain class '{class_name}'")
+
+            script_class = getattr(module, class_name)
+            script_instance = script_class()
+
+            # Add to selected game object
+            self._add_component_to_selected(script_instance)
+
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self, "Error", f"Failed to load script:\n{e}"
+            )
 
     def _add_component_to_selected(self, component) -> None:
         obj = self._selection.game_object
@@ -232,9 +451,123 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._file_view.setModel(self._file_model)
         self._file_view.setRootIndex(self._file_model.index(str(self.project_root)))
         self._file_view.setColumnWidth(0, 280)
+        self._file_view.setDragEnabled(True)
+        self._file_view.doubleClicked.connect(self._on_file_double_clicked)
         layout.addWidget(self._file_view)
 
         self._files_dock.setWidget(panel)
+
+        # Connect viewport drop signal
+        self._viewport.file_dropped.connect(self._on_file_dropped)
+
+    def _on_file_double_clicked(self, index: QtCore.QModelIndex) -> None:
+        path = self._file_model.filePath(index)
+        self._add_3d_object_from_path(path)
+
+    def _on_file_dropped(self, path: str) -> None:
+        if not path:
+            # Drop from tree view
+            index = self._file_view.currentIndex()
+            if index.isValid():
+                path = self._file_model.filePath(index)
+        
+        if path:
+            self._add_3d_object_from_path(path)
+
+    def _add_3d_object_from_path(self, path: str) -> None:
+        ext = Path(path).suffix.lower()
+        # Common 3D file extensions supported by trimesh
+        if ext in {'.obj', '.gltf', '.glb', '.stl', '.ply', '.off'}:
+            try:
+                self._viewport.makeCurrent()
+                obj3d = Object3D(path)
+                go = GameObject(Path(path).stem)
+                go.add_component(obj3d)
+                
+                # Position in front of camera (at target)
+                go.transform.position = tuple(self._camera_control['target'])
+                
+                self._scene.add_object(go)
+                self._refresh_hierarchy()
+                self._select_object(go)
+                self._viewport.update()
+                self._viewport.doneCurrent()
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load 3D object:\n{e}")
+
+    def _on_play_clicked(self) -> None:
+        """Run the current scene as a game in the viewport."""
+        if self._playing:
+            return
+
+        try:
+            # Store original scene state
+            self._original_scene_data = self._scene._to_scene_dict()
+            
+            # Switch to game camera
+            if self._window:
+                self._window.active_camera_override = None
+            
+            # Initialize all scripts
+            for obj in self._scene.objects:
+                obj.start_scripts()
+            
+            self._playing = True
+            self._paused = False
+            
+            self._play_action.setEnabled(False)
+            self._pause_action.setEnabled(True)
+            self._stop_action.setEnabled(True)
+            self._pause_action.setText("Pause")
+            
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to start play mode:\n{e}")
+
+    def _on_pause_clicked(self) -> None:
+        """Toggle pause state."""
+        if not self._playing:
+            return
+            
+        self._paused = not self._paused
+        self._pause_action.setText("Resume" if self._paused else "Pause")
+
+    def _on_stop_clicked(self) -> None:
+        """Stop play mode and restore scene state."""
+        if not self._playing:
+            return
+
+        try:
+            self._playing = False
+            self._paused = False
+            
+            # Restore editor camera
+            if self._window:
+                self._window.active_camera_override = self._editor_camera
+            
+            # Restore scene state
+            if self._original_scene_data:
+                # We need to be careful with the viewport context when restoring
+                self._viewport.makeCurrent()
+                # Clear current scene's GPU resources
+                self._window.clear_objects()
+                
+                # Re-create scene from data
+                new_scene = EditorScene._from_scene_dict(self._original_scene_data)
+                self._scene = new_scene
+                self._window.show_scene(self._scene)
+                
+                self._refresh_hierarchy()
+                self._select_object(None)
+                self._viewport.update()
+                self._viewport.doneCurrent()
+            
+            self._play_action.setEnabled(True)
+            self._pause_action.setEnabled(False)
+            self._stop_action.setEnabled(False)
+            self._pause_action.setText("Pause")
+            
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to stop play mode:\n{e}")
 
     def _setup_timer(self) -> None:
         self._timer = QtCore.QTimer(self)
@@ -329,7 +662,8 @@ class EditorWindow(QtWidgets.QMainWindow):
             use_pygame_events=False,
         )
         self._window.show_editor_overlays = True
-        self._window.editor_show_camera = False  # Hide the camera frustum visualization
+        self._window.editor_show_camera = True
+        self._window.active_camera_override = self._editor_camera
         self._window.show_scene(self._scene)
 
         self._viewport.resized.connect(self._on_viewport_resized)
@@ -361,7 +695,8 @@ class EditorWindow(QtWidgets.QMainWindow):
         if getattr(self._window, '_screen_fbo', None):
             self._window._screen_fbo.use()
             
-        if not self._window.tick(simulate=False):
+        simulate = self._playing and not self._paused
+        if not self._window.tick(simulate=simulate):
             self._timer.stop()
 
     def _tick_engine(self) -> None:
@@ -386,9 +721,22 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._viewport.mouse_released.connect(self._on_mouse_released)
         self._viewport.mouse_moved.connect(self._on_mouse_moved)
         self._viewport.wheel_scrolled.connect(self._on_wheel_scrolled)
+        self._viewport.key_pressed.connect(self._on_key_pressed)
+        self._viewport.key_released.connect(self._on_key_released)
 
     def _on_mouse_pressed(self, event: QtGui.QMouseEvent) -> None:
         """Handle mouse button press for camera control."""
+        if self._playing and not self._paused:
+            # Forward to engine
+            button = 0
+            if event.button() == QtCore.Qt.MouseButton.LeftButton: button = 1
+            elif event.button() == QtCore.Qt.MouseButton.MiddleButton: button = 2
+            elif event.button() == QtCore.Qt.MouseButton.RightButton: button = 3
+            if button > 0:
+                self._window._mouse_buttons.add(button)
+                self._scene.on_mouse_press(event.pos().x(), event.pos().y(), button, 0)
+            return
+
         if event.button() == QtCore.Qt.MouseButton.RightButton:
             # Right-click: Orbit
             self._camera_control['orbiting'] = True
@@ -402,6 +750,16 @@ class EditorWindow(QtWidgets.QMainWindow):
 
     def _on_mouse_released(self, event: QtGui.QMouseEvent) -> None:
         """Handle mouse button release for camera control."""
+        if self._playing and not self._paused:
+            button = 0
+            if event.button() == QtCore.Qt.MouseButton.LeftButton: button = 1
+            elif event.button() == QtCore.Qt.MouseButton.MiddleButton: button = 2
+            elif event.button() == QtCore.Qt.MouseButton.RightButton: button = 3
+            if button > 0:
+                self._window._mouse_buttons.discard(button)
+                self._scene.on_mouse_release(event.pos().x(), event.pos().y(), button, 0)
+            return
+
         if event.button() == QtCore.Qt.MouseButton.RightButton:
             self._camera_control['orbiting'] = False
             self._viewport.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
@@ -416,8 +774,19 @@ class EditorWindow(QtWidgets.QMainWindow):
             return
 
         current_pos = (event.pos().x(), event.pos().y())
-        last_pos = self._camera_control['last_mouse_pos']
         
+        if self._playing and not self._paused:
+            dx = 0
+            dy = 0
+            if self._camera_control['last_mouse_pos']:
+                dx = current_pos[0] - self._camera_control['last_mouse_pos'][0]
+                dy = current_pos[1] - self._camera_control['last_mouse_pos'][1]
+            self._window._mouse_position = current_pos
+            self._scene.on_mouse_motion(current_pos[0], current_pos[1], dx, dy)
+            self._camera_control['last_mouse_pos'] = current_pos
+            return
+
+        last_pos = self._camera_control['last_mouse_pos']
         if last_pos is None:
             return
 
@@ -441,28 +810,39 @@ class EditorWindow(QtWidgets.QMainWindow):
             azimuth_rad = np.radians(self._camera_control['azimuth'])
             elevation_rad = np.radians(self._camera_control['elevation'])
             
-            # Forward vector (from camera to target)
+            # Right vector: perpendicular to forward (in XZ plane) and world up
+            # At azimuth 0, forward is -Z, so right is +X
+            # At azimuth 90, forward is +X, so right is +Z
+            right = np.array([
+                -np.cos(azimuth_rad),  # X component
+                0.0,                    # Y component (horizontal right)
+                np.sin(azimuth_rad)     # Z component
+            ], dtype=np.float32)
+            
+            # Up vector: world up (0, 1, 0) for horizontal panning
+            # For true camera-relative up, we'd need to account for elevation
+            # But for panning, we want to move perpendicular to the view direction
+            # Project world_up onto the plane perpendicular to forward
             forward = np.array([
-                np.cos(elevation_rad) * np.sin(azimuth_rad),
+                -np.cos(elevation_rad) * np.sin(azimuth_rad),
                 np.sin(elevation_rad),
                 np.cos(elevation_rad) * np.cos(azimuth_rad)
             ], dtype=np.float32)
-            forward = -forward  # Camera looks at target, so forward is opposite
+            forward = forward / np.linalg.norm(forward)
             
-            # Right vector
             world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-            right = np.cross(forward, world_up)
-            right_norm = np.linalg.norm(right)
-            if right_norm > 0.001:
-                right = right / right_norm
-            else:
-                right = np.array([1.0, 0.0, 0.0], dtype=np.float32)
             
-            # Up vector
+            # True up vector relative to camera orientation
             up = np.cross(right, forward)
-            up = up / np.linalg.norm(up)
+            up_norm = np.linalg.norm(up)
+            if up_norm > 0.001:
+                up = up / up_norm
+            else:
+                up = world_up
             
             # Pan target
+            # dx < 0 moves target left (camera appears to move right), so add right * (-dx)
+            # dy < 0 moves target up (camera appears to move down), so add up * dy
             pan_x = -dx * sensitivity
             pan_y = dy * sensitivity
             
@@ -470,6 +850,50 @@ class EditorWindow(QtWidgets.QMainWindow):
             self._update_camera_position()
 
         self._camera_control['last_mouse_pos'] = current_pos
+
+    def _on_key_pressed(self, event: QtGui.QKeyEvent) -> None:
+        if not self._playing or self._paused:
+            return
+        
+        key = self._map_qt_key_to_pygame(event.key())
+        if key:
+            self._window._keys_pressed.add(key)
+            self._scene.on_key_press(key, 0)
+
+    def _on_key_released(self, event: QtGui.QKeyEvent) -> None:
+        if not self._playing or self._paused:
+            return
+            
+        key = self._map_qt_key_to_pygame(event.key())
+        if key:
+            self._window._keys_pressed.discard(key)
+            self._scene.on_key_release(key, 0)
+
+    def _map_qt_key_to_pygame(self, qt_key: int) -> Optional[int]:
+        import pygame
+        # Basic mapping for common keys
+        mapping = {
+            QtCore.Qt.Key.Key_W: pygame.K_w,
+            QtCore.Qt.Key.Key_A: pygame.K_a,
+            QtCore.Qt.Key.Key_S: pygame.K_s,
+            QtCore.Qt.Key.Key_D: pygame.K_d,
+            QtCore.Qt.Key.Key_Q: pygame.K_q,
+            QtCore.Qt.Key.Key_E: pygame.K_e,
+            QtCore.Qt.Key.Key_Space: pygame.K_SPACE,
+            QtCore.Qt.Key.Key_Shift: pygame.K_LSHIFT,
+            QtCore.Qt.Key.Key_Control: pygame.K_LCTRL,
+            QtCore.Qt.Key.Key_Alt: pygame.K_LALT,
+            QtCore.Qt.Key.Key_Escape: pygame.K_ESCAPE,
+            QtCore.Qt.Key.Key_Up: pygame.K_UP,
+            QtCore.Qt.Key.Key_Down: pygame.K_DOWN,
+            QtCore.Qt.Key.Key_Left: pygame.K_LEFT,
+            QtCore.Qt.Key.Key_Right: pygame.K_RIGHT,
+        }
+        # For letters, we can also try direct mapping if not in dict
+        if qt_key >= QtCore.Qt.Key.Key_A and qt_key <= QtCore.Qt.Key.Key_Z:
+            return pygame.K_a + (qt_key - QtCore.Qt.Key.Key_A)
+        
+        return mapping.get(qt_key)
 
     def _on_wheel_scrolled(self, event: QtGui.QWheelEvent) -> None:
         """Handle mouse wheel for zooming."""
@@ -488,7 +912,17 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._update_camera_position()
 
     def _update_camera_position(self) -> None:
-        """Update camera position based on spherical coordinates."""
+        """Update camera position based on spherical coordinates.
+        
+        Coordinate system:
+        - Y is up
+        - Azimuth 0 = looking along -Z (into the screen)
+        - Azimuth 90 = looking along +X (right)
+        - Azimuth 180 = looking along +Z (towards camera)
+        - Elevation 0 = horizontal
+        - Elevation 90 = looking straight up (+Y)
+        - Elevation -90 = looking straight down (-Y)
+        """
         if not self._window:
             return
 
@@ -498,43 +932,96 @@ class EditorWindow(QtWidgets.QMainWindow):
         target = self._camera_control['target']
 
         # Calculate camera position on sphere around target
-        # Azimuth: rotation around Y axis (0 = looking along -Z)
-        # Elevation: angle from horizontal plane
+        # Using right-handed coordinate system:
+        # X = right, Y = up, Z = back (away from camera at azimuth=0)
+        # Azimuth 0: looking along -Z (into screen), camera is at +Z
+        # Azimuth 90: looking along +X, camera is at -X
         cam_offset = np.array([
-            distance * np.cos(elevation_rad) * np.sin(azimuth_rad),
-            distance * np.sin(elevation_rad),
-            distance * np.cos(elevation_rad) * np.cos(azimuth_rad)
+            -distance * np.cos(elevation_rad) * np.sin(azimuth_rad),  # X: -sin for right-handed
+            distance * np.sin(elevation_rad),                          # Y: up
+            distance * np.cos(elevation_rad) * np.cos(azimuth_rad)     # Z: +cos
         ], dtype=np.float32)
 
         camera_pos = target + cam_offset
         
-        # Update scene camera instead of window camera (since scene is active)
-        self._scene.camera.position = tuple(camera_pos)
-        self._scene.camera.look_at(tuple(target))
+        # Update editor camera
+        # Create a dummy GameObject for the editor camera if it doesn't have one
+        # so that look_at works correctly (it needs a transform)
+        if not self._editor_camera.game_object:
+            from src.engine3d.gameobject import GameObject
+            cam_go = GameObject("Editor Camera")
+            cam_go.add_component(self._editor_camera)
+            
+        self._editor_camera.game_object.transform.position = tuple(camera_pos)
+        self._editor_camera.game_object.transform.look_at(tuple(target))
         self._viewport.update()
 
     def _refresh_hierarchy(self) -> None:
         self._hierarchy_tree.clear()
         self._object_items.clear()
-        for obj in self._scene.objects:
-            if obj.name in self._scene_auto_objects:
-                continue
+        
+        # Build hierarchy based on transform parent-child relationships
+        # First, collect all non-auto objects
+        all_objects = [obj for obj in self._scene.objects if obj.name not in self._scene_auto_objects]
+        
+        # Track which objects have been added
+        added = set()
+        
+        def add_object_to_tree(obj: GameObject, parent_item=None):
+            """Recursively add object and its children to the tree."""
+            if obj in added:
+                return
+            added.add(obj)
+            
             item = QtWidgets.QTreeWidgetItem([obj.name])
-            self._hierarchy_tree.addTopLevelItem(item)
             self._object_items[obj] = item
+            
+            if parent_item:
+                parent_item.addChild(item)
+            else:
+                self._hierarchy_tree.addTopLevelItem(item)
+            
+            # Add children (objects whose transform parent is this object's transform)
+            for child_obj in all_objects:
+                if child_obj not in added:
+                    if child_obj.transform.parent is obj.transform:
+                        add_object_to_tree(child_obj, item)
+        
+        # First pass: add root objects (no parent or parent not in scene)
+        for obj in all_objects:
+            if obj.transform.parent is None:
+                add_object_to_tree(obj)
+        
+        # Second pass: add remaining objects (those with parents not in the hierarchy)
+        for obj in all_objects:
+            if obj not in added:
+                add_object_to_tree(obj)
+        
+        # Expand all items to show hierarchy
+        self._hierarchy_tree.expandAll()
 
     def _show_add_menu(self) -> None:
         menu = QtWidgets.QMenu(self)
+        empty_action = menu.addAction("Empty GameObject")
         cube_action = menu.addAction("Cube")
         sphere_action = menu.addAction("Sphere")
         plane_action = menu.addAction("Plane")
+        camera_action = menu.addAction("Camera")
+        
         action = menu.exec(QtGui.QCursor.pos())
-        if action == cube_action:
+        if action == empty_action:
+            self._add_object(GameObject(), "GameObject")
+        elif action == cube_action:
             self._add_object(create_cube(1.0), "Cube")
         elif action == sphere_action:
             self._add_object(create_sphere(0.75), "Sphere")
         elif action == plane_action:
             self._add_object(create_plane(5.0, 5.0), "Plane")
+        elif action == camera_action:
+            from src.engine3d.camera import Camera3D
+            go = GameObject("Camera")
+            go.add_component(Camera3D())
+            self._add_object(go, "Camera")
 
     def _add_object(self, obj: GameObject, name: str) -> None:
         self._viewport.makeCurrent()
@@ -569,6 +1056,8 @@ class EditorWindow(QtWidgets.QMainWindow):
             if item is selected_item:
                 self._select_object(obj)
                 return
+        # If not found directly, it might be a child item (shouldn't happen with our dict, but just in case)
+        self._select_object(None)
 
     def _on_hierarchy_double_click(self, item: QtWidgets.QTreeWidgetItem, column: int) -> None:
         for obj, it in self._object_items.items():
@@ -694,6 +1183,8 @@ class EditorWindow(QtWidgets.QMainWindow):
     def _build_component_fields(self, obj: GameObject) -> None:
         from src.engine3d.light import Light3D, DirectionalLight3D, PointLight3D
         from src.physics.collider import Collider, BoxCollider, SphereCollider, CapsuleCollider
+        from src.engine3d.object3d import Object3D
+        from src.physics.rigidbody import Rigidbody
         self._clear_component_fields()
 
         for comp in obj.components:
@@ -715,6 +1206,10 @@ class EditorWindow(QtWidgets.QMainWindow):
                     box = self._create_capsule_collider_fields(comp)
                 else:
                     box = self._create_collider_fields(comp)
+            elif isinstance(comp, Object3D):
+                box = self._create_object3d_fields(comp)
+            elif isinstance(comp, Rigidbody):
+                box = self._create_rigidbody_fields(comp)
             else:
                 box = self._create_component_summary(comp)
             box._component_ref = comp
@@ -725,6 +1220,8 @@ class EditorWindow(QtWidgets.QMainWindow):
     def _refresh_component_fields(self, obj: GameObject) -> None:
         from src.engine3d.light import Light3D
         from src.physics.collider import Collider
+        from src.engine3d.object3d import Object3D
+        from src.physics.rigidbody import Rigidbody
 
         component_boxes = [
             box for box in self._component_fields
@@ -756,10 +1253,77 @@ class EditorWindow(QtWidgets.QMainWindow):
                 self._refresh_light_fields(box, comp)
             elif isinstance(comp, Collider):
                 self._refresh_collider_fields(box, comp)
+            elif isinstance(comp, Object3D):
+                self._refresh_object3d_fields(box, comp)
+            elif isinstance(comp, Rigidbody):
+                self._refresh_rigidbody_fields(box, comp)
 
         if comp_index + 1 != len(component_boxes):
             self._components_dirty = True
             self._build_component_fields(obj)
+
+    def _create_object3d_fields(self, comp: 'Object3D') -> QtWidgets.QGroupBox:
+        box = QtWidgets.QGroupBox(comp.__class__.__name__)
+        layout = QtWidgets.QFormLayout(box)
+        layout.setContentsMargins(6, 6, 6, 6)
+
+        color_widget = self._create_color_editor(comp)
+        layout.addRow("Color", color_widget)
+        box._color_widget = color_widget
+        return box
+
+    def _refresh_object3d_fields(self, box: QtWidgets.QGroupBox, comp: 'Object3D') -> None:
+        if hasattr(box, "_color_widget"):
+            self._refresh_color_editor(box._color_widget, comp.color)
+
+    def _create_rigidbody_fields(self, comp: 'Rigidbody') -> QtWidgets.QGroupBox:
+        box = QtWidgets.QGroupBox(comp.__class__.__name__)
+        layout = QtWidgets.QFormLayout(box)
+        layout.setContentsMargins(6, 6, 6, 6)
+
+        use_gravity = QtWidgets.QCheckBox()
+        use_gravity.setChecked(comp.use_gravity)
+        use_gravity.toggled.connect(lambda val, c=comp: setattr(c, "use_gravity", val))
+        layout.addRow("Use Gravity", use_gravity)
+        box._use_gravity_field = use_gravity
+
+        is_kinematic = QtWidgets.QCheckBox()
+        is_kinematic.setChecked(comp.is_kinematic)
+        is_kinematic.toggled.connect(lambda val, c=comp: setattr(c, "is_kinematic", val))
+        layout.addRow("Is Kinematic", is_kinematic)
+        box._is_kinematic_field = is_kinematic
+
+        is_static = QtWidgets.QCheckBox()
+        is_static.setChecked(comp.is_static)
+        is_static.toggled.connect(lambda val, c=comp: setattr(c, "is_static", val))
+        layout.addRow("Is Static", is_static)
+        box._is_static_field = is_static
+
+        mass = self._make_spinbox(0.001, 10000.0, step=0.1, decimals=2)
+        mass.setValue(float(comp.mass))
+        mass.valueChanged.connect(lambda val, c=comp: setattr(c, "mass", float(val)))
+        layout.addRow("Mass", mass)
+        box._mass_field = mass
+
+        drag = self._make_spinbox(0.0, 1000.0, step=0.1, decimals=2)
+        drag.setValue(float(comp.drag))
+        drag.valueChanged.connect(lambda val, c=comp: setattr(c, "drag", float(val)))
+        layout.addRow("Drag", drag)
+        box._drag_field = drag
+
+        return box
+
+    def _refresh_rigidbody_fields(self, box: QtWidgets.QGroupBox, comp: 'Rigidbody') -> None:
+        if hasattr(box, "_use_gravity_field"):
+            box._use_gravity_field.setChecked(comp.use_gravity)
+        if hasattr(box, "_is_kinematic_field"):
+            box._is_kinematic_field.setChecked(comp.is_kinematic)
+        if hasattr(box, "_is_static_field"):
+            box._is_static_field.setChecked(comp.is_static)
+        if hasattr(box, "_mass_field"):
+            self._apply_spinbox(box._mass_field, float(comp.mass))
+        if hasattr(box, "_drag_field"):
+            self._apply_spinbox(box._drag_field, float(comp.drag))
 
     def _create_component_summary(self, comp) -> QtWidgets.QGroupBox:
         box = QtWidgets.QGroupBox(comp.__class__.__name__)

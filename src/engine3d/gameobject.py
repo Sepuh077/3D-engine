@@ -314,6 +314,22 @@ class GameObject:
                 "__type__": "ColliderGroup",
                 "name": value.name,
             }
+
+        try:
+            from src.engine3d.graphics.material import Material
+        except ImportError:
+            Material = None
+        if Material is not None and isinstance(value, Material):
+            state = {
+                k: GameObject._serialize_value(v)
+                for k, v in value.__dict__.items()
+            }
+            return {
+                "__type__": "Material",
+                "class": value.__class__.__name__,
+                "state": state,
+            }
+
         if isinstance(value, dict):
             return {key: GameObject._serialize_value(val) for key, val in value.items()}
         if isinstance(value, list):
@@ -354,6 +370,15 @@ class GameObject:
                 from src.physics.group import ColliderGroup
                 name = value.get("name", "default")
                 return ColliderGroup._registry.get(name) or ColliderGroup(name)
+            if value.get("__type__") == "Material":
+                from src.engine3d.graphics import material
+                class_name = value.get("class", "LitMaterial")
+                state = value.get("state", {})
+                mat_cls = getattr(material, class_name, material.LitMaterial)
+                mat = mat_cls()
+                restored_state = GameObject._deserialize_value(state)
+                mat.__dict__.update(restored_state)
+                return mat
             if value.get("__type__") == "bytes":
                 return bytes(value.get("value", []))
             if value.get("__type__") == "repr":
