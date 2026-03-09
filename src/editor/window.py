@@ -1,6 +1,3 @@
-"""
-Editor UI for Engine3D using PySide6.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,49 +7,14 @@ from typing import Dict, Optional, Iterable
 import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets, QtOpenGLWidgets
 
-from .scene import Scene3D
-from .window import Window3D
-from .gameobject import GameObject
-from .object3d import create_cube, create_sphere, create_plane
+from src.engine3d.scene import Scene3D
+from src.engine3d.window import Window3D
+from src.engine3d.gameobject import GameObject
+from src.engine3d.object3d import create_cube, create_sphere, create_plane
 
-
-@dataclass
-class EditorSelection:
-    game_object: Optional[GameObject] = None
-
-
-class ViewportWidget(QtOpenGLWidgets.QOpenGLWidget):
-    resized = QtCore.Signal(int, int)
-
-    def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
-        fmt = QtGui.QSurfaceFormat()
-        fmt.setRenderableType(QtGui.QSurfaceFormat.RenderableType.OpenGL)
-        fmt.setProfile(QtGui.QSurfaceFormat.OpenGLContextProfile.CoreProfile)
-        fmt.setDepthBufferSize(24)
-        fmt.setStencilBufferSize(8)
-        fmt.setVersion(3, 3)
-        super().__init__(parent)
-        self.setFormat(fmt)
-        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_NativeWindow)
-        self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
-
-    def paintEngine(self):
-        return None
-
-    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
-        return
-
-    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
-        super().resizeEvent(event)
-        size = event.size()
-        self.resized.emit(size.width(), size.height())
-
-
-class EditorScene(Scene3D):
-    def __init__(self) -> None:
-        super().__init__()
-        self.editor_label = "Untitled Scene"
-
+from .selection import EditorSelection
+from .viewport import ViewportWidget
+from .scene import EditorScene
 
 class EditorWindow(QtWidgets.QMainWindow):
     def __init__(self, project_root: str, parent: Optional[QtWidgets.QWidget] = None) -> None:
@@ -69,12 +31,24 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._component_fields: list[QtWidgets.QWidget] = []
         self._components_dirty = True
 
+        # Camera control state
+        self._camera_control = {
+            'orbiting': False,
+            'panning': False,
+            'last_mouse_pos': None,
+            'azimuth': 45.0,  # Horizontal angle around target
+            'elevation': 45.0,  # Vertical angle
+            'distance': 10.0,  # Distance from target
+            'target': np.array([0.0, 0.0, 0.0], dtype=np.float32),
+        }
+
         self._build_layout()
         self._setup_files_panel()
         self._setup_hierarchy_panel()
         self._setup_inspector_panel()
         self._setup_toolbar()
         self._setup_timer()
+        self._setup_camera_controls()
 
         QtCore.QTimer.singleShot(0, self._init_engine)
 
@@ -215,10 +189,10 @@ class EditorWindow(QtWidgets.QMainWindow):
             return
 
         menu = QtWidgets.QMenu(self)
-        from .light import PointLight3D, DirectionalLight3D
+        from src.engine3d.light import PointLight3D, DirectionalLight3D
         from src.physics.rigidbody import Rigidbody
         from src.physics.collider import BoxCollider, SphereCollider, CapsuleCollider
-        from .particle import ParticleSystem
+        from src.engine3d.particle import ParticleSystem
 
         actions = {
             "Point Light": lambda: self._add_component_to_selected(PointLight3D()),
@@ -344,22 +318,24 @@ class EditorWindow(QtWidgets.QMainWindow):
             return
 
         self._viewport.makeCurrent()
+        dpr = self._viewport.devicePixelRatio()
 
         self._window = Window3D(
-            width=max(1, self._viewport.width()),
-            height=max(1, self._viewport.height()),
+            width=int(max(1, self._viewport.width() * dpr)),
+            height=int(max(1, self._viewport.height() * dpr)),
             title="Engine3D Editor Viewport",
             resizable=True,
             use_pygame_window=False,
             use_pygame_events=False,
         )
         self._window.show_editor_overlays = True
+        self._window.editor_show_camera = False  # Hide the camera frustum visualization
         self._window.show_scene(self._scene)
 
         self._viewport.resized.connect(self._on_viewport_resized)
 
-        self._window.camera.position = (6, 6, 6)
-        self._window.camera.look_at((0, 0, 0))
+        # Initialize camera using spherical coordinates
+        self._update_camera_position()
 
         self._refresh_hierarchy()
         self._select_object(None)
@@ -367,18 +343,33 @@ class EditorWindow(QtWidgets.QMainWindow):
         if not self._scene.objects:
             self._update_inspector_fields()
 
+        self._viewport.render_callback = self._render_frame
         self._timer.start()
 
-    def _tick_engine(self) -> None:
+    def _render_frame(self) -> None:
+        """Called by ViewportWidget.paintGL() to render the frame."""
         if not self._window:
             return
-        self._viewport.makeCurrent()
-        try:
-            if not self._window.tick(simulate=False):
-                self._timer.stop()
-        finally:
-            self._update_inspector_fields()
-            self._viewport.doneCurrent()
+            
+        # Update moderngl framebuffer wrapper if ID changed (e.g. after resize)
+        fbo_id = self._viewport.defaultFramebufferObject()
+        if not hasattr(self, '_last_fbo_id') or self._last_fbo_id != fbo_id:
+            self._last_fbo_id = fbo_id
+            self._window._screen_fbo = self._window._ctx.detect_framebuffer()
+        
+        # Ensure moderngl knows about it
+        if getattr(self._window, '_screen_fbo', None):
+            self._window._screen_fbo.use()
+            
+        if not self._window.tick(simulate=False):
+            self._timer.stop()
+
+    def _tick_engine(self) -> None:
+        """Called by timer to request a redraw and update UI state."""
+        if not self._window:
+            return
+        self._viewport.update()  # Triggers paintGL
+        self._update_inspector_fields()
 
     def _on_viewport_resized(self, width: int, height: int) -> None:
         if not self._window:
@@ -388,6 +379,139 @@ class EditorWindow(QtWidgets.QMainWindow):
             self._window.on_resize(width, height)
         finally:
             self._viewport.doneCurrent()
+
+    def _setup_camera_controls(self) -> None:
+        """Setup Unity-style camera controls (orbit, pan, zoom)."""
+        self._viewport.mouse_pressed.connect(self._on_mouse_pressed)
+        self._viewport.mouse_released.connect(self._on_mouse_released)
+        self._viewport.mouse_moved.connect(self._on_mouse_moved)
+        self._viewport.wheel_scrolled.connect(self._on_wheel_scrolled)
+
+    def _on_mouse_pressed(self, event: QtGui.QMouseEvent) -> None:
+        """Handle mouse button press for camera control."""
+        if event.button() == QtCore.Qt.MouseButton.RightButton:
+            # Right-click: Orbit
+            self._camera_control['orbiting'] = True
+            self._camera_control['last_mouse_pos'] = (event.pos().x(), event.pos().y())
+            self._viewport.setCursor(QtCore.Qt.CursorShape.ClosedHandCursor)
+        elif event.button() == QtCore.Qt.MouseButton.MiddleButton:
+            # Middle-click: Pan
+            self._camera_control['panning'] = True
+            self._camera_control['last_mouse_pos'] = (event.pos().x(), event.pos().y())
+            self._viewport.setCursor(QtCore.Qt.CursorShape.SizeAllCursor)
+
+    def _on_mouse_released(self, event: QtGui.QMouseEvent) -> None:
+        """Handle mouse button release for camera control."""
+        if event.button() == QtCore.Qt.MouseButton.RightButton:
+            self._camera_control['orbiting'] = False
+            self._viewport.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
+        elif event.button() == QtCore.Qt.MouseButton.MiddleButton:
+            self._camera_control['panning'] = False
+            self._viewport.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
+        self._camera_control['last_mouse_pos'] = None
+
+    def _on_mouse_moved(self, event: QtGui.QMouseEvent) -> None:
+        """Handle mouse movement for camera control."""
+        if not self._window:
+            return
+
+        current_pos = (event.pos().x(), event.pos().y())
+        last_pos = self._camera_control['last_mouse_pos']
+        
+        if last_pos is None:
+            return
+
+        dx = current_pos[0] - last_pos[0]
+        dy = current_pos[1] - last_pos[1]
+
+        if self._camera_control['orbiting']:
+            # Orbit around target
+            sensitivity = 0.5
+            self._camera_control['azimuth'] -= dx * sensitivity
+            self._camera_control['elevation'] += dy * sensitivity
+            # Clamp elevation to avoid flipping
+            self._camera_control['elevation'] = np.clip(self._camera_control['elevation'], -89.0, 89.0)
+            self._update_camera_position()
+            
+        elif self._camera_control['panning']:
+            # Pan the target point
+            sensitivity = 0.01 * self._camera_control['distance']
+            
+            # Calculate right and up vectors based on current camera orientation
+            azimuth_rad = np.radians(self._camera_control['azimuth'])
+            elevation_rad = np.radians(self._camera_control['elevation'])
+            
+            # Forward vector (from camera to target)
+            forward = np.array([
+                np.cos(elevation_rad) * np.sin(azimuth_rad),
+                np.sin(elevation_rad),
+                np.cos(elevation_rad) * np.cos(azimuth_rad)
+            ], dtype=np.float32)
+            forward = -forward  # Camera looks at target, so forward is opposite
+            
+            # Right vector
+            world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+            right = np.cross(forward, world_up)
+            right_norm = np.linalg.norm(right)
+            if right_norm > 0.001:
+                right = right / right_norm
+            else:
+                right = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+            
+            # Up vector
+            up = np.cross(right, forward)
+            up = up / np.linalg.norm(up)
+            
+            # Pan target
+            pan_x = -dx * sensitivity
+            pan_y = dy * sensitivity
+            
+            self._camera_control['target'] += right * pan_x + up * pan_y
+            self._update_camera_position()
+
+        self._camera_control['last_mouse_pos'] = current_pos
+
+    def _on_wheel_scrolled(self, event: QtGui.QWheelEvent) -> None:
+        """Handle mouse wheel for zooming."""
+        if not self._window:
+            return
+
+        # Get scroll delta
+        delta = event.angleDelta().y()
+        zoom_factor = 0.9 if delta > 0 else 1.1
+        
+        # Apply zoom
+        self._camera_control['distance'] *= zoom_factor
+        # Clamp distance
+        self._camera_control['distance'] = np.clip(self._camera_control['distance'], 0.1, 1000.0)
+        
+        self._update_camera_position()
+
+    def _update_camera_position(self) -> None:
+        """Update camera position based on spherical coordinates."""
+        if not self._window:
+            return
+
+        azimuth_rad = np.radians(self._camera_control['azimuth'])
+        elevation_rad = np.radians(self._camera_control['elevation'])
+        distance = self._camera_control['distance']
+        target = self._camera_control['target']
+
+        # Calculate camera position on sphere around target
+        # Azimuth: rotation around Y axis (0 = looking along -Z)
+        # Elevation: angle from horizontal plane
+        cam_offset = np.array([
+            distance * np.cos(elevation_rad) * np.sin(azimuth_rad),
+            distance * np.sin(elevation_rad),
+            distance * np.cos(elevation_rad) * np.cos(azimuth_rad)
+        ], dtype=np.float32)
+
+        camera_pos = target + cam_offset
+        
+        # Update scene camera instead of window camera (since scene is active)
+        self._scene.camera.position = tuple(camera_pos)
+        self._scene.camera.look_at(tuple(target))
+        self._viewport.update()
 
     def _refresh_hierarchy(self) -> None:
         self._hierarchy_tree.clear()
@@ -455,17 +579,13 @@ class EditorWindow(QtWidgets.QMainWindow):
     def _focus_on_object(self, obj: GameObject) -> None:
         if not self._window:
             return
-        target = obj.transform.world_position
-        cam = self._window.camera
-        # Move camera to a reasonable distance but looking at the object
-        direction = cam.position - cam.target
-        dist = np.linalg.norm(direction)
-        if dist < 0.1: dist = 5.0
         
-        new_pos = target + (direction / dist) * 5.0
-        cam.position = new_pos
-        cam.look_at(target)
-        self._viewport.update()
+        # Update the camera control target to the object's position
+        target = obj.transform.world_position
+        self._camera_control['target'] = np.array(target, dtype=np.float32)
+        
+        # Keep current distance but update position
+        self._update_camera_position()
 
     def _select_object(self, obj: Optional[GameObject]) -> None:
         self._selection.game_object = obj
@@ -572,7 +692,7 @@ class EditorWindow(QtWidgets.QMainWindow):
             self._refresh_component_fields(obj)
 
     def _build_component_fields(self, obj: GameObject) -> None:
-        from .light import Light3D, DirectionalLight3D, PointLight3D
+        from src.engine3d.light import Light3D, DirectionalLight3D, PointLight3D
         from src.physics.collider import Collider, BoxCollider, SphereCollider, CapsuleCollider
         self._clear_component_fields()
 
@@ -603,7 +723,7 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._components_dirty = False
 
     def _refresh_component_fields(self, obj: GameObject) -> None:
-        from .light import Light3D
+        from src.engine3d.light import Light3D
         from src.physics.collider import Collider
 
         component_boxes = [
@@ -845,10 +965,3 @@ class EditorWindow(QtWidgets.QMainWindow):
         collider.height = float(value)
         collider._transform_dirty = True
         self._viewport.update()
-
-
-def run_editor(project_root: str) -> None:
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    editor = EditorWindow(project_root)
-    editor.show()
-    app.exec()

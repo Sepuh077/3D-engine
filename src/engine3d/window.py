@@ -1416,7 +1416,13 @@ class Window3D:
     def _render(self):
         """Render the scene with vertex colors OR real textures."""
         r, g, b = self.background_color
-        self._ctx.clear(r, g, b)
+        
+        # Use custom screen FBO if set (e.g. for Qt embedding where FBO changes)
+        if getattr(self, '_screen_fbo', None):
+            self._screen_fbo.clear(r, g, b)
+            self._screen_fbo.use()
+        else:
+            self._ctx.clear(r, g, b)
 
         self.bind_context()
 

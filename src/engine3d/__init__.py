@@ -24,7 +24,6 @@ Example:
 from .window import Window3D
 from .scene import Scene3D
 from .gameobject import GameObject
-from .editor import run_editor
 from .component import Component, Script, WaitForSeconds, WaitEndOfFrame, Time
 from .transform import Transform
 from src.physics.rigidbody import Rigidbody
@@ -70,6 +69,7 @@ from .drawing import (
     draw_line,
     draw_image,
 )
+
 
 __all__ = [
     'Window3D',
