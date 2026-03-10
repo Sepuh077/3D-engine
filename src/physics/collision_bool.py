@@ -192,8 +192,12 @@ def cylinder_vs_mesh_bool(cyl: Collider, mesh: Collider) -> bool:
 
 def aabb_overlap(a: Collider, b: Collider) -> bool:
     # Fast AABB broadphase
-    amin, amax = a.get_world_aabb()
-    bmin, bmax = b.get_world_aabb()
+    aabb_a = a.get_world_aabb()
+    aabb_b = b.get_world_aabb()
+    if aabb_a is None or aabb_b is None:
+        return False
+    amin, amax = aabb_a
+    bmin, bmax = aabb_b
     return not (amax[0] < bmin[0] or amax[1] < bmin[1] or amax[2] < bmin[2] or
                 amin[0] > bmax[0] or amin[1] > bmax[1] or amin[2] > bmax[2])
 

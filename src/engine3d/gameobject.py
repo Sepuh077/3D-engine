@@ -248,7 +248,7 @@ class GameObject:
                 "_uv",
             })
 
-        is_collider = module_name == "src.physics.collider"
+        is_collider = module_name.startswith("src.physics")
         if is_collider:
             skip_keys = set(skip_keys)
             skip_keys.update({
@@ -258,6 +258,7 @@ class GameObject:
                 "obb",
                 "aabb",
                 "cylinder",
+                "_transform_dirty",
             })
 
         state = {

@@ -60,17 +60,23 @@ class Collider(Component):
         Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]], dtype=np.float32)
         R = Rx @ Ry @ Rz
 
-        extents = (obj3d._local_max - obj3d._local_min) * 0.5 * scale
+        local_extents = (obj3d._local_max - obj3d._local_min) * 0.5
+        extents = local_extents * scale
         local_center = (obj3d._local_min + obj3d._local_max) * 0.5
-        center_offset = local_center * scale @ R
+        center_offset = (local_center * scale) @ R
         base_center = position + center_offset
         absR = np.abs(R)
         half_extents = absR @ extents
         aabb_dims = half_extents * 2
 
-        # Collider-specific center offset
-        c_offset = aabb_dims * np.array(self.center, dtype=np.float32)
+        # Collider-specific center offset (local offset scaled/rotated)
+        local_offset = local_extents * np.array(self.center, dtype=np.float32)
+        c_offset = (local_offset * scale) @ R
         collider_center = base_center + c_offset
+
+        # Keep collision bounds in sync when no custom center set
+        if np.allclose(local_offset, 0.0):
+            collider_center = base_center
 
         # Mesh data if needed
         if obj3d.mesh is not None:

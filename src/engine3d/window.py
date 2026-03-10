@@ -1309,105 +1309,107 @@ class Window3D:
         )
 
     def draw_collider(self, obj: GameObject, color=(0, 1, 0), line_width=1.0):
-        camera = self._current_scene.camera if self._current_scene else self.camera
+        camera = self.active_camera_override or (self._current_scene.camera if self._current_scene else self.camera)
+        if not camera:
+            return
         view = camera.get_view_matrix()
         proj = camera.get_projection_matrix(self.aspect)
 
         self._ctx.line_width = line_width
         self._collider_program['color'].value = tuple(color)
 
-        # Use first collider (normal case; supports multi via get_components)
         for coll in obj.get_components(Collider):
             if not coll:
-                return
+                continue
             t = coll.type
+            model = None
+            vao = None
 
             if t == ColliderType.CUBE:
-                # Call collider methods (no world_* on Object3D)
-                center, axes, extents = coll.get_world_obb() or (np.zeros(3), np.eye(3), np.ones(3))
-
+                bounds = coll.get_world_obb()
+                if bounds is None:
+                    continue
+                center, axes, extents = bounds
                 S = np.array([
                     [extents[0], 0, 0, 0],
                     [0, extents[1], 0, 0],
                     [0, 0, extents[2], 0],
                     [0, 0, 0, 1],
                 ], dtype=np.float32)
-
                 R4 = np.eye(4, dtype=np.float32)
                 R4[:3, :3] = axes
-
                 T = np.array([
                     [1, 0, 0, 0],
                     [0, 1, 0, 0],
                     [0, 0, 1, 0],
                     [center[0], center[1], center[2], 1],
                 ], dtype=np.float32)
-
                 model = S @ R4 @ T
-
                 vao = self._cube_vao
 
             elif t == ColliderType.SPHERE:
-                center, radius = coll.get_world_sphere() or (np.zeros(3), 1.0)
-
-                model = np.eye(4, dtype=np.float32)
-                model[:3, :3] *= radius
-                model[3, :3] = center
-
+                bounds = coll.get_world_sphere()
+                if bounds is None:
+                    continue
+                center, radius = bounds
+                model = np.array([
+                    [radius, 0, 0, 0],
+                    [0, radius, 0, 0],
+                    [0, 0, radius, 0],
+                    [center[0], center[1], center[2], 1],
+                ], dtype=np.float32)
                 vao = self._sphere_vao
 
             elif t == ColliderType.CYLINDER:
-                center, radius, half_h = coll.get_world_cylinder() or (np.zeros(3), 1.0, 1.0)
-                _, axes, _ = coll.get_world_obb() or (np.zeros(3), np.eye(3), np.ones(3))
-
+                bounds = coll.get_world_cylinder()
+                if bounds is None:
+                    continue
+                center, radius, half_h = bounds
+                axes = coll.get_world_obb()[1] if coll.get_world_obb() else np.eye(3)
                 S = np.array([
                     [radius, 0, 0, 0],
                     [0, half_h, 0, 0],
                     [0, 0, radius, 0],
                     [0, 0, 0, 1],
                 ], dtype=np.float32)
-
                 R4 = np.eye(4, dtype=np.float32)
                 R4[:3, :3] = axes
-
                 T = np.array([
                     [1, 0, 0, 0],
                     [0, 1, 0, 0],
                     [0, 0, 1, 0],
                     [center[0], center[1], center[2], 1],
                 ], dtype=np.float32)
-
                 model = S @ R4 @ T
-
                 vao = self._cylinder_vao
-                
-            elif t == ColliderType.MESH:
-                # Fallback to drawing OBB for Mesh colliders
-                center, axes, extents = coll.get_world_obb() or (np.zeros(3), np.eye(3), np.ones(3))
 
+            elif t == ColliderType.MESH:
+                bounds = coll.get_world_obb()
+                if bounds is None:
+                    continue
+                center, axes, extents = bounds
                 S = np.array([
                     [extents[0], 0, 0, 0],
                     [0, extents[1], 0, 0],
                     [0, 0, extents[2], 0],
                     [0, 0, 0, 1],
                 ], dtype=np.float32)
-
                 R4 = np.eye(4, dtype=np.float32)
                 R4[:3, :3] = axes
-
                 T = np.array([
                     [1, 0, 0, 0],
                     [0, 1, 0, 0],
                     [0, 0, 1, 0],
                     [center[0], center[1], center[2], 1],
                 ], dtype=np.float32)
-
                 model = S @ R4 @ T
-
                 vao = self._cube_vao
 
+            if model is None or vao is None:
+                continue
+
             mvp = model @ view @ proj
-            self._collider_program['mvp'].write(mvp.tobytes())
+            self._collider_program['mvp'].write(mvp.astype(np.float32).tobytes())
             vao.render(moderngl.LINES)
 
     # =========================================================================
@@ -1623,6 +1625,9 @@ class Window3D:
         # Render 2D overlay on top (after all 3D and custom draws)
         self._render_2d_overlay()
 
+        # Clear 2D overlay surface after presenting
+        self._2d_surface.fill((0, 0, 0, 0))
+
         if self._use_pygame_window:
             pygame.display.flip()
 
@@ -1632,117 +1637,100 @@ class Window3D:
         
         if self.editor_show_axis:
             self._draw_editor_axis(active_camera)
+            self._draw_view_axis_indicator(active_camera)
             
         if self.editor_show_camera and self._current_scene:
             for obj in self._current_scene.objects:
                 for cam in obj.get_components(Camera3D):
                     if cam != active_camera:
                         self._draw_editor_camera(cam)
-                        
-        if self.editor_show_gizmo and self.editor_selected_object:
-            self._draw_editor_gizmo(self.editor_selected_object)
+
         self._draw_editor_colliders()
-
-    def _draw_editor_colliders(self):
-        for obj in self._active_objects():
-            if obj.get_components(Collider):
-                self.draw_collider(obj, color=(1.0, 0.0, 0.0), line_width=1.5)
-
-    def _draw_editor_axis(self, camera: Camera3D):
-        origin = (0.0, 0.0, 0.0)
-        axis_length = 1.5
-        axis_points = {
-            "X": (axis_length, 0.0, 0.0),
-            "Y": (0.0, axis_length, 0.0),
-            "Z": (0.0, 0.0, axis_length),
-        }
-        axis_colors = {
-            "X": (1.0, 0.3, 0.3),
-            "Y": (0.3, 1.0, 0.3),
-            "Z": (0.3, 0.3, 1.0),
-        }
-        origin_screen = self.project_point(origin)
-        if not origin_screen:
-            return
-        for axis, target in axis_points.items():
-            target_screen = self.project_point(target)
-            if not target_screen:
-                continue
-            self.draw_line(origin_screen[:2], target_screen[:2], axis_colors[axis], width=2, aa=True)
-            label_pos = (target_screen[0] + 6, target_screen[1] + 4)
-            self.draw_text(axis, label_pos[0], label_pos[1], axis_colors[axis], font_size=14)
 
     def _draw_editor_camera(self, camera: Camera3D):
         cam_go = camera.game_object
-        if not cam_go: return
-        cam_pos = cam_go.transform.world_position
-        origin = self.project_point(cam_pos)
-        if not origin:
+        if not cam_go:
             return
-        
-        color = (1.0, 1.0, 1.0) # White
-        self.draw_circle(origin[0], origin[1], 6, color, border_width=2, aa=True)
-        self.draw_text("Camera", origin[0] + 8, origin[1] - 12, color, font_size=14)
 
+        cam_pos = cam_go.transform.world_position
+        color = (1.0, 1.0, 1.0)
+
+        # Draw camera icon using 2D overlay
+        origin = self.project_point(cam_pos)
+        if origin:
+            self.draw_circle(origin[0], origin[1], 6, color, border_width=2, aa=True)
+            self.draw_text("Camera", origin[0] + 8, origin[1] - 12, color, font_size=14)
+
+        # 3D frustum lines
         forward = cam_go.transform.forward
         right = cam_go.transform.right
         up = cam_go.transform.up
 
         near = camera.near
-        far = min(camera.far, 20.0) # Show a reasonable frustum extent
+        far = min(camera.far, 10.0)
         fov_rad = np.radians(camera.fov)
-        aspect = self.aspect
-        
-        # Calculate half-height and half-width at near and far planes
-        half_height_near = np.tan(fov_rad * 0.5) * near
-        half_width_near = half_height_near * aspect
-        half_height_far = np.tan(fov_rad * 0.5) * far
-        half_width_far = half_height_far * aspect
+        half_near = np.tan(fov_rad * 0.5) * near
+        half_far = np.tan(fov_rad * 0.5) * far
 
         near_center = cam_pos + forward * near
         far_center = cam_pos + forward * far
 
-        # Near plane corners (correct aspect ratio)
         near_corners = [
-            near_center + right * half_width_near + up * half_height_near,  # top-right
-            near_center - right * half_width_near + up * half_height_near,  # top-left
-            near_center - right * half_width_near - up * half_height_near,  # bottom-left
-            near_center + right * half_width_near - up * half_height_near,  # bottom-right
+            near_center + right * half_near + up * half_near,
+            near_center - right * half_near + up * half_near,
+            near_center - right * half_near - up * half_near,
+            near_center + right * half_near - up * half_near,
         ]
-        # Far plane corners
         far_corners = [
-            far_center + right * half_width_far + up * half_height_far,     # top-right
-            far_center - right * half_width_far + up * half_height_far,     # top-left
-            far_center - right * half_width_far - up * half_height_far,     # bottom-left
-            far_center + right * half_width_far - up * half_height_far,     # bottom-right
+            far_center + right * half_far + up * half_far,
+            far_center - right * half_far + up * half_far,
+            far_center - right * half_far - up * half_far,
+            far_center + right * half_far - up * half_far,
         ]
 
-        # Draw near plane rectangle
+        edges = []
         for i in range(4):
-            n0 = self.project_point(tuple(near_corners[i]))
-            n1 = self.project_point(tuple(near_corners[(i + 1) % 4]))
-            if n0 and n1:
-                self.draw_line(n0[:2], n1[:2], color, width=2, aa=True)
-        
-        # Draw far plane rectangle
-        for i in range(4):
-            f0 = self.project_point(tuple(far_corners[i]))
-            f1 = self.project_point(tuple(far_corners[(i + 1) % 4]))
-            if f0 and f1:
-                self.draw_line(f0[:2], f1[:2], color, width=1, aa=True)
-        
-        # Draw connecting lines from near to far (frustum edges)
-        for i in range(4):
-            n0 = self.project_point(tuple(near_corners[i]))
-            f0 = self.project_point(tuple(far_corners[i]))
-            if n0 and f0:
-                self.draw_line(n0[:2], f0[:2], color, width=1, aa=True)
-        
-        # Draw forward direction line from camera position
-        forward_point = cam_pos + forward * (near + 0.5)
-        forward_screen = self.project_point(tuple(forward_point))
-        if forward_screen:
-            self.draw_line(origin[:2], forward_screen[:2], color, width=2, aa=True)
+            edges.append((near_corners[i], near_corners[(i + 1) % 4]))
+            edges.append((far_corners[i], far_corners[(i + 1) % 4]))
+            edges.append((near_corners[i], far_corners[i]))
+
+        self._draw_editor_lines_3d(edges, color, line_width=1.5)
+
+    def _draw_editor_lines_3d(self, edges: List[Tuple[np.ndarray, np.ndarray]], color: Tuple[float, float, float], line_width: float = 1.0):
+        camera = self.active_camera_override or (self._current_scene.camera if self._current_scene else self.camera)
+        if not camera:
+            return
+
+        view = camera.get_view_matrix()
+        projection = camera.get_projection_matrix(self.aspect)
+        vp = view @ projection
+
+        self._ctx.line_width = line_width
+        self._collider_program['color'].value = tuple(color)
+
+        for start, end in edges:
+            verts = np.array([start, end], dtype=np.float32)
+            vbo = self._ctx.buffer(verts.tobytes())
+            vao = self._ctx.vertex_array(
+                self._collider_program,
+                [(vbo, '3f', 'in_position')]
+            )
+            mvp = vp
+            self._collider_program['mvp'].write(mvp.astype(np.float32).tobytes())
+            vao.render(moderngl.LINES)
+            vao.release()
+            vbo.release()
+
+        # Restore line width after custom drawing
+        self._ctx.line_width = 1.0
+
+    def _draw_editor_axis(self, camera: Camera3D):
+        return
+
+    def _draw_editor_colliders(self):
+        for obj in self._active_objects():
+            if obj.get_components(Collider):
+                self.draw_collider(obj, color=(1.0, 0.0, 0.0), line_width=1.5)
 
     def _draw_editor_gizmo(self, obj: GameObject):
         origin = self.project_point(tuple(obj.transform.world_position))
@@ -1767,6 +1755,32 @@ class Window3D:
             self.draw_line(origin[:2], end_screen[:2], colors[axis], width=3, aa=True)
             self.draw_circle(end_screen[0], end_screen[1], 4, colors[axis], border_width=0, aa=True)
             self.draw_text(axis, end_screen[0] + 6, end_screen[1] + 4, colors[axis], font_size=12)
+
+    def _draw_view_axis_indicator(self, camera: Camera3D):
+        if not camera or not camera.game_object:
+            return
+
+        origin_px = np.array([60.0, self.height - 60.0], dtype=np.float32)
+        axis_len = 28.0
+        colors = {
+            "X": (1.0, 0.3, 0.3),
+            "Y": (0.3, 1.0, 0.3),
+            "Z": (0.3, 0.3, 1.0),
+        }
+
+        view = camera.get_view_matrix()
+        rot = view[:3, :3].T
+
+        basis = {
+            "X": rot[:, 0],
+            "Y": rot[:, 1],
+            "Z": rot[:, 2],
+        }
+
+        for axis, direction in basis.items():
+            end_px = origin_px + np.array([direction[0], -direction[1]]) * axis_len
+            self.draw_line(tuple(origin_px), tuple(end_px), colors[axis], width=2, aa=True)
+            self.draw_text(axis, int(end_px[0] + 4), int(end_px[1] - 4), colors[axis], font_size=12)
 
     # =========================================================================
     # Event handling

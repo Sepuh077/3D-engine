@@ -216,11 +216,12 @@ class Scene3D:
         Called once when the scene is first shown.
         Override to set up your scene.
         """
-        # Add default directional light
-        light_obj = GameObject("Directional Light")
-        light_obj.add_component(DirectionalLight3D())
-        light_obj.transform.rotation = (-45, 30, 0)
-        self.add_object(light_obj)
+        # Add default directional light if none exists
+        if self.light is None:
+            light_obj = GameObject("Directional Light")
+            light_obj.add_component(DirectionalLight3D())
+            light_obj.transform.rotation = (-45, 30, 0)
+            self.add_object(light_obj)
     
     def on_show(self):
         """
@@ -330,20 +331,6 @@ class Scene3D:
         return cls._from_scene_dict(data)
 
     def _to_scene_dict(self) -> dict:
-        # Don't serialize system objects (Main Camera, Directional Light)
-        # to avoid duplicates when restoring
-        system_objects = {"Main Camera", "Directional Light"}
-        
-        # Save directional light settings
-        light_data = {}
-        if self.light:
-            light_data = {
-                "direction": self.light.direction.tolist() if hasattr(self.light.direction, 'tolist') else list(self.light.direction),
-                "color": self.light.color.tolist() if hasattr(self.light.color, 'tolist') else list(self.light.color),
-                "intensity": self.light.intensity,
-                "ambient": self.light.ambient,
-            }
-        
         return {
             "camera": {
                 "position": self.camera.position.tolist(),
@@ -352,8 +339,7 @@ class Scene3D:
                 "near": self.camera.near,
                 "far": self.camera.far,
             },
-            "light": light_data,
-            "objects": [obj._to_prefab_dict() for obj in self.objects if obj.name not in system_objects],
+            "objects": [obj._to_prefab_dict() for obj in self.objects],
         }
 
     def clone(self) -> "Scene3D":
@@ -370,31 +356,36 @@ class Scene3D:
     @classmethod
     def _from_scene_dict(cls, data: dict) -> "Scene3D":
         scene = cls()
+        scene.clear_objects()
         camera_data = data.get("camera", {})
         if camera_data:
-            # Update the existing Main Camera with saved settings
             scene.camera.position = camera_data.get("position", scene.camera.position)
             scene.camera.target = camera_data.get("target", scene.camera.target)
             scene.camera.fov = camera_data.get("fov", scene.camera.fov)
             scene.camera.near = camera_data.get("near", scene.camera.near)
             scene.camera.far = camera_data.get("far", scene.camera.far)
 
-        # Update the existing Directional Light with saved settings if available
-        light_data = data.get("light", {})
-        if light_data:
-            # Find the existing Directional Light and update it
-            for obj in scene.objects:
-                light = obj.get_component(DirectionalLight3D)
-                if light:
-                    light.direction = light_data.get("direction", light.direction)
-                    light.color = light_data.get("color", light.color)
-                    light.intensity = light_data.get("intensity", light.intensity)
-                    light.ambient = light_data.get("ambient", light.ambient)
-                    break
-
-        # Add user-created objects
         for obj_data in data.get("objects", []):
             scene.objects.append(GameObject._from_prefab_dict(obj_data))
+
+        for obj in scene.objects:
+            for cam in obj.get_components(Camera3D):
+                if cam not in scene._cameras:
+                    scene._cameras.append(cam)
+                    if scene._main_camera is None:
+                        scene._main_camera = cam
+
+        light_data = data.get("light", {})
+        if light_data:
+            # Handle legacy light data by creating a new GameObject
+            light_obj = GameObject("Legacy Light")
+            light = DirectionalLight3D()
+            light.direction = light_data.get("direction", light.direction)
+            light.color = light_data.get("color", light.color)
+            light.intensity = light_data.get("intensity", light.intensity)
+            light.ambient = light_data.get("ambient", light.ambient)
+            light_obj.add_component(light)
+            scene.add_object(light_obj)
 
         for obj in scene.objects:
             obj.start_scripts()

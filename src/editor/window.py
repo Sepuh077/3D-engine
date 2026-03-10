@@ -507,6 +507,7 @@ class {class_name}(Script):
             # Switch to game camera
             if self._window:
                 self._window.active_camera_override = None
+                self._window.editor_show_axis = False
             
             # Initialize all scripts
             for obj in self._scene.objects:
@@ -543,6 +544,7 @@ class {class_name}(Script):
             # Restore editor camera
             if self._window:
                 self._window.active_camera_override = self._editor_camera
+                self._window.editor_show_axis = True
             
             # Restore scene state
             if self._original_scene_data:
@@ -810,39 +812,28 @@ class {class_name}(Script):
             azimuth_rad = np.radians(self._camera_control['azimuth'])
             elevation_rad = np.radians(self._camera_control['elevation'])
             
-            # Right vector: perpendicular to forward (in XZ plane) and world up
-            # At azimuth 0, forward is -Z, so right is +X
-            # At azimuth 90, forward is +X, so right is +Z
-            right = np.array([
-                -np.cos(azimuth_rad),  # X component
-                0.0,                    # Y component (horizontal right)
-                np.sin(azimuth_rad)     # Z component
-            ], dtype=np.float32)
-            
-            # Up vector: world up (0, 1, 0) for horizontal panning
-            # For true camera-relative up, we'd need to account for elevation
-            # But for panning, we want to move perpendicular to the view direction
-            # Project world_up onto the plane perpendicular to forward
+            # Forward vector (from camera to target)
             forward = np.array([
-                -np.cos(elevation_rad) * np.sin(azimuth_rad),
+                np.cos(elevation_rad) * np.sin(azimuth_rad),
                 np.sin(elevation_rad),
                 np.cos(elevation_rad) * np.cos(azimuth_rad)
             ], dtype=np.float32)
-            forward = forward / np.linalg.norm(forward)
+            forward = -forward  # Camera looks at target, so forward is opposite
             
+            # Right vector
             world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-            
-            # True up vector relative to camera orientation
-            up = np.cross(right, forward)
-            up_norm = np.linalg.norm(up)
-            if up_norm > 0.001:
-                up = up / up_norm
+            right = np.cross(forward, world_up)
+            right_norm = np.linalg.norm(right)
+            if right_norm > 0.001:
+                right = right / right_norm
             else:
-                up = world_up
+                right = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+            
+            # Up vector
+            up = np.cross(right, forward)
+            up = up / np.linalg.norm(up)
             
             # Pan target
-            # dx < 0 moves target left (camera appears to move right), so add right * (-dx)
-            # dy < 0 moves target up (camera appears to move down), so add up * dy
             pan_x = -dx * sensitivity
             pan_y = dy * sensitivity
             
@@ -912,17 +903,7 @@ class {class_name}(Script):
         self._update_camera_position()
 
     def _update_camera_position(self) -> None:
-        """Update camera position based on spherical coordinates.
-        
-        Coordinate system:
-        - Y is up
-        - Azimuth 0 = looking along -Z (into the screen)
-        - Azimuth 90 = looking along +X (right)
-        - Azimuth 180 = looking along +Z (towards camera)
-        - Elevation 0 = horizontal
-        - Elevation 90 = looking straight up (+Y)
-        - Elevation -90 = looking straight down (-Y)
-        """
+        """Update camera position based on spherical coordinates."""
         if not self._window:
             return
 
@@ -932,14 +913,12 @@ class {class_name}(Script):
         target = self._camera_control['target']
 
         # Calculate camera position on sphere around target
-        # Using right-handed coordinate system:
-        # X = right, Y = up, Z = back (away from camera at azimuth=0)
-        # Azimuth 0: looking along -Z (into screen), camera is at +Z
-        # Azimuth 90: looking along +X, camera is at -X
+        # Azimuth: rotation around Y axis (0 = looking along -Z)
+        # Elevation: angle from horizontal plane
         cam_offset = np.array([
-            -distance * np.cos(elevation_rad) * np.sin(azimuth_rad),  # X: -sin for right-handed
-            distance * np.sin(elevation_rad),                          # Y: up
-            distance * np.cos(elevation_rad) * np.cos(azimuth_rad)     # Z: +cos
+            distance * np.cos(elevation_rad) * np.sin(azimuth_rad),
+            distance * np.sin(elevation_rad),
+            distance * np.cos(elevation_rad) * np.cos(azimuth_rad)
         ], dtype=np.float32)
 
         camera_pos = target + cam_offset
@@ -954,6 +933,10 @@ class {class_name}(Script):
             
         self._editor_camera.game_object.transform.position = tuple(camera_pos)
         self._editor_camera.game_object.transform.look_at(tuple(target))
+
+        if self._selection.game_object and self._selection.game_object.name == "Editor Camera":
+            self._update_inspector_fields()
+
         self._viewport.update()
 
     def _refresh_hierarchy(self) -> None:
@@ -1147,12 +1130,21 @@ class {class_name}(Script):
         obj = self._selection.game_object
         if not obj:
             self._inspector_name.setText("")
+            self._inspector_name.setEnabled(False)
             for fields in [self._pos_fields, self._rot_fields, self._scale_fields]:
                 for f in fields:
                     f.setValue(0.0)
+                    f.setEnabled(False)
+            self._transform_group.setVisible(False)
             self._clear_component_fields()
             self._components_dirty = True
             return
+        
+        self._inspector_name.setEnabled(True)
+        self._transform_group.setVisible(True)
+        for fields in [self._pos_fields, self._rot_fields, self._scale_fields]:
+            for f in fields:
+                f.setEnabled(True)
 
         if force_components:
             self._components_dirty = True
