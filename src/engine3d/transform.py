@@ -225,6 +225,20 @@ class Transform(Component):
         """Get world scale (computed from parent + local)."""
         self._compute_world_transform()
         return tuple(self._world_scale)
+
+    @world_scale.setter
+    def world_scale(self, value):
+        """Set world scale (converts to local based on parent)."""
+        world_scale = np.array(value, dtype=np.float32)
+
+        if self._parent is None:
+            self._local_scale = world_scale
+        else:
+            parent = self._parent
+            parent._compute_world_transform()
+            self._local_scale = world_scale / parent._world_scale
+
+        self._mark_dirty()
     
     # =========================================================================
     # Convenience properties (alias to local transform for backward compatibility)

@@ -255,8 +255,6 @@ class GameObject:
             "_mesh_key",
             "_mesh_cache",
             "_texture_image",
-            "_parent",
-            "_children",
         }
 
         is_object3d = module_name == "src.engine3d.object3d" and class_name == "Object3D"

@@ -25,6 +25,7 @@ class HierarchyTreeWidget(QtWidgets.QTreeWidget):
     def __init__(self, editor_window, parent=None):
         super().__init__(parent)
         self.editor_window = editor_window
+        self._dragged_item = None
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
         self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
@@ -32,10 +33,14 @@ class HierarchyTreeWidget(QtWidgets.QTreeWidget):
         self.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
         self.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
     
+    def startDrag(self, supported_actions) -> None:
+        self._dragged_item = self.currentItem()
+        super().startDrag(supported_actions)
+
     def dropEvent(self, event: QtGui.QDropEvent) -> None:
         """Handle drop event to parent objects."""
         # Get the item being dragged
-        dragged_item = self.currentItem()
+        dragged_item = self._dragged_item or self.currentItem()
         if not dragged_item:
             return
         
@@ -58,6 +63,10 @@ class HierarchyTreeWidget(QtWidgets.QTreeWidget):
         # Check for circular parenting (can't drop parent onto its child)
         if drop_obj and self._is_descendant(dragged_obj, drop_obj):
             return  # Invalid drop
+
+        # Allow dropping onto viewport or empty area to unparent
+        if drop_item is None:
+            drop_obj = None
         
         # Emit signal for the parenting operation
         # If drop_obj is None, it means dropping at root level
@@ -65,6 +74,7 @@ class HierarchyTreeWidget(QtWidgets.QTreeWidget):
         
         # Accept the event
         event.acceptProposedAction()
+        self._dragged_item = None
     
     def _is_descendant(self, potential_ancestor: GameObject, potential_descendant: GameObject) -> bool:
         """Check if potential_descendant is a descendant of potential_ancestor."""
@@ -139,6 +149,7 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._setup_timer()
         self._setup_camera_controls()
         self._setup_shortcuts()
+        self._setup_deselect_shortcut()
 
         QtCore.QTimer.singleShot(0, self._init_engine)
 
@@ -231,10 +242,13 @@ class EditorWindow(QtWidgets.QMainWindow):
         button_row = QtWidgets.QHBoxLayout()
         add_button = QtWidgets.QPushButton("Add", panel)
         remove_button = QtWidgets.QPushButton("Remove", panel)
+        refresh_button = QtWidgets.QPushButton("Refresh", panel)
         add_button.clicked.connect(self._show_add_menu)
         remove_button.clicked.connect(self._remove_selected)
+        refresh_button.clicked.connect(self._refresh_hierarchy)
         button_row.addWidget(add_button)
         button_row.addWidget(remove_button)
+        button_row.addWidget(refresh_button)
         layout.addLayout(button_row)
 
         self._hierarchy_tree = HierarchyTreeWidget(self, self)
@@ -277,7 +291,18 @@ class EditorWindow(QtWidgets.QMainWindow):
         
         # Refresh the hierarchy tree
         self._refresh_hierarchy()
+        
+        # Defer selection to ensure widget is fully updated
+        QtCore.QTimer.singleShot(0, lambda: self._select_and_expand(child_obj, parent_obj))
+
+    def _select_and_expand(self, child_obj: GameObject, parent_obj: Optional[GameObject]) -> None:
+        if parent_obj and parent_obj in self._object_items:
+            self._object_items[parent_obj].setExpanded(True)
+        
         self._select_object(child_obj)
+        if child_obj in self._object_items:
+            self._object_items[child_obj].setSelected(True)
+        
         self._viewport.update()
         self._viewport.doneCurrent()
         
@@ -316,6 +341,7 @@ class EditorWindow(QtWidgets.QMainWindow):
                 f.setRange(-10000, 10000)
                 f.setSingleStep(0.1)
                 f.setDecimals(2)
+                f.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
                 f.valueChanged.connect(self._on_transform_changed)
 
         pos_row = QtWidgets.QHBoxLayout()
@@ -545,6 +571,17 @@ class {class_name}(Script):
             except ValueError:
                 module_name = file_path.stem
             
+            # Ensure parent packages exist for dotted module names
+            if "." in module_name:
+                import types
+                parts = module_name.split(".")
+                for i in range(1, len(parts)):
+                    pkg_name = ".".join(parts[:i])
+                    if pkg_name not in sys.modules:
+                        pkg_module = types.ModuleType(pkg_name)
+                        pkg_module.__path__ = [str(self.project_root / Path(*parts[:i]))]
+                        sys.modules[pkg_name] = pkg_module
+
             # Ensure unique module name (in case of conflicts)
             base_module_name = module_name
             counter = 1
@@ -958,6 +995,7 @@ class {class_name}(Script):
         spinbox.setRange(minimum, maximum)
         spinbox.setSingleStep(step)
         spinbox.setDecimals(decimals)
+        spinbox.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         return spinbox
 
     def _make_vector_row(self, values: Iterable[float], on_changed, minimum: float = -10000.0, maximum: float = 10000.0,
@@ -1163,6 +1201,14 @@ class {class_name}(Script):
         # Ctrl+O to open scene
         open_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+O"), self)
         open_shortcut.activated.connect(self._open_scene_dialog)
+
+    def _setup_deselect_shortcut(self) -> None:
+        esc_shortcut = QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_Escape), self)
+        esc_shortcut.activated.connect(self._deselect_all)
+
+    def _deselect_all(self) -> None:
+        self._hierarchy_tree.clearSelection()
+        self._select_object(None)
 
     def _open_scene_dialog(self) -> None:
         """Open a dialog to select a scene to load."""
@@ -1486,11 +1532,25 @@ class {class_name}(Script):
             if obj not in added:
                 add_object_to_tree(obj)
         
-        # Expand all items to show hierarchy
-        self._hierarchy_tree.expandAll()
+        # Set up expand/collapse icon indicators
+        self._hierarchy_tree.setRootIsDecorated(True)
+        self._hierarchy_tree.setItemsExpandable(True)
+        for obj, item in self._object_items.items():
+            if self._get_object_children(obj, all_objects):
+                item.setChildIndicatorPolicy(QtWidgets.QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
+            else:
+                item.setChildIndicatorPolicy(QtWidgets.QTreeWidgetItem.ChildIndicatorPolicy.DontShowIndicator)
+
+    def _get_object_children(self, obj: GameObject, all_objects: List[GameObject]) -> List[GameObject]:
+        return [child for child in all_objects if child.transform.parent is obj.transform]
 
     def _show_add_menu(self) -> None:
         menu = QtWidgets.QMenu(self)
+        
+        # Determine parent for the new object
+        # If an object is selected, the new object will be its child
+        parent_obj = self._selection.game_object
+        
         empty_action = menu.addAction("Empty GameObject")
         cube_action = menu.addAction("Cube")
         sphere_action = menu.addAction("Sphere")
@@ -1498,26 +1558,45 @@ class {class_name}(Script):
         camera_action = menu.addAction("Camera")
         
         action = menu.exec(QtGui.QCursor.pos())
+        if not action:
+            return
+
+        new_obj = None
+        name = ""
+
         if action == empty_action:
-            self._add_object(GameObject(), "GameObject")
+            new_obj = GameObject()
+            name = "GameObject"
         elif action == cube_action:
-            self._add_object(create_cube(1.0), "Cube")
+            new_obj = create_cube(1.0)
+            name = "Cube"
         elif action == sphere_action:
-            self._add_object(create_sphere(0.75), "Sphere")
+            new_obj = create_sphere(0.75)
+            name = "Sphere"
         elif action == plane_action:
-            self._add_object(create_plane(5.0, 5.0), "Plane")
+            new_obj = create_plane(5.0, 5.0)
+            name = "Plane"
         elif action == camera_action:
             from src.engine3d.camera import Camera3D
-            go = GameObject("Camera")
-            go.add_component(Camera3D())
-            self._add_object(go, "Camera")
+            new_obj = GameObject("Camera")
+            new_obj.add_component(Camera3D())
+            name = "Camera"
+
+        if new_obj:
+            if parent_obj:
+                new_obj.transform.parent = parent_obj.transform
+            self._add_object(new_obj, name)
 
     def _add_object(self, obj: GameObject, name: str) -> None:
         self._viewport.makeCurrent()
         obj.name = name
         self._scene.add_object(obj)
         self._refresh_hierarchy()
-        self._select_object(obj)
+        
+        # Defer selection to ensure widget is fully updated
+        parent_obj = obj.transform.parent.game_object if obj.transform.parent else None
+        QtCore.QTimer.singleShot(0, lambda: self._select_and_expand(obj, parent_obj))
+        
         self._viewport.update()
         self._viewport.doneCurrent()
         self._mark_scene_dirty()
@@ -1818,6 +1897,7 @@ class {class_name}(Script):
         spinbox.setRange(min_val, max_val)
         spinbox.setSingleStep(step)
         spinbox.setDecimals(decimals)
+        spinbox.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         spinbox.setValue(float(current_value) if current_value is not None else field_info.default_value)
         
         if field_info.tooltip:
@@ -1835,6 +1915,7 @@ class {class_name}(Script):
         
         spinbox.setRange(min_val, max_val)
         spinbox.setSingleStep(step)
+        spinbox.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         spinbox.setValue(int(current_value) if current_value is not None else field_info.default_value)
         
         if field_info.tooltip:
