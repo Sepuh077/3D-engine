@@ -636,14 +636,27 @@ class Window3D:
                                     manifold = get_collision_manifold(ca, cb)
                                     if manifold:
                                         self._resolve_collision(a, cb.game_object, manifold)
-                                    if a.get_component(Rigidbody):
-                                        a.get_component(Rigidbody).velocity = np.zeros(3, dtype=np.float32)
+                                        # Project remaining step along the wall to slide
+                                        step_np = np.array([step.x, step.y, step.z]) if hasattr(step, 'x') else np.array(step)
+                                        dot = float(np.dot(step_np, manifold.normal))
+                                        if dot < 0:
+                                            step_np -= dot * manifold.normal
+                                            if hasattr(step, 'x'):
+                                                step = type(step)(*step_np)
+                                            else:
+                                                step = step_np
+                                    else:
+                                        # Fallback if no manifold could be generated
+                                        a.transform._local_position = np.copy(last_safe)
+                                        a.transform._mark_dirty()
+                                        if a.get_component(Rigidbody):
+                                            a.get_component(Rigidbody).velocity = np.zeros(3, dtype=np.float32)
                                     hit_solid = True
                                     break
                         if hit_solid:
-                            a.transform._local_position = np.copy(last_safe)
-                            a.transform._mark_dirty()
-                            break
+                            step_np = np.array([step.x, step.y, step.z]) if hasattr(step, 'x') else np.array(step)
+                            if np.linalg.norm(step_np) < 1e-6:
+                                break
                         last_safe = np.copy(a.transform._local_position)
                     else:
                         perform_final_check = False
