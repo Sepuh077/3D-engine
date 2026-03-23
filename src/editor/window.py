@@ -146,6 +146,12 @@ class FileTreeView(QtWidgets.QTreeView):
                 if new_index.isValid():
                     self.setCurrentIndex(new_index)
                 
+                # Refresh hierarchy to show prefab connection (blue font)
+                self.editor_window._refresh_hierarchy()
+                
+                # Update inspector to show prefab connection text
+                self.editor_window._update_inspector_fields(force_components=True)
+                
                 # Show success message
                 QtWidgets.QMessageBox.information(
                     self, "Prefab Created",
@@ -412,6 +418,9 @@ class {type_name}(ScriptableObject):
     def _scan_project_for_scriptable_objects(self, menu: QtWidgets.QMenu, directory: str) -> None:
         """Scan project files for ScriptableObject subclasses and add to menu."""
         import re
+        import importlib.util
+        import sys
+        import types
         
         # Find all .py files in the project
         project_root = self.editor_window.project_root
@@ -445,22 +454,47 @@ class {type_name}(ScriptableObject):
             for file_path, class_name in found_types:
                 # Try to import and get the class
                 try:
-                    import importlib.util
-                    import sys
+                    # Create a proper module name based on relative path from project root
+                    # This ensures the _type field in .asset files has a proper module path
+                    try:
+                        relative_path = file_path.relative_to(project_root)
+                        module_name = '.'.join(relative_path.with_suffix('').parts)
+                    except ValueError:
+                        module_name = file_path.stem
                     
-                    module_name = f"so_{class_name}_{id(file_path)}"
-                    spec = importlib.util.spec_from_file_location(module_name, str(file_path))
-                    if spec and spec.loader:
-                        module = importlib.util.module_from_spec(spec)
-                        sys.modules[module_name] = module
-                        spec.loader.exec_module(module)
-                        
-                        if hasattr(module, class_name):
-                            so_class = getattr(module, class_name)
-                            action = menu.addAction(f"{class_name} (from {file_path.stem})")
-                            action.triggered.connect(
-                                lambda checked, c=so_class, d=directory: self._create_scriptable_object_instance(c, d)
-                            )
+                    # Ensure parent packages exist for dotted module names
+                    if "." in module_name:
+                        parts = module_name.split(".")
+                        for i in range(1, len(parts)):
+                            pkg_name = ".".join(parts[:i])
+                            if pkg_name not in sys.modules:
+                                pkg_module = types.ModuleType(pkg_name)
+                                pkg_module.__path__ = [str(project_root / Path(*parts[:i]))]
+                                sys.modules[pkg_name] = pkg_module
+                    
+                    # Check if module is already imported
+                    if module_name in sys.modules:
+                        module = sys.modules[module_name]
+                        # Try to reload to get latest changes
+                        try:
+                            import importlib
+                            importlib.reload(module)
+                        except Exception:
+                            pass
+                    else:
+                        # Import the module
+                        spec = importlib.util.spec_from_file_location(module_name, str(file_path))
+                        if spec and spec.loader:
+                            module = importlib.util.module_from_spec(spec)
+                            sys.modules[module_name] = module
+                            spec.loader.exec_module(module)
+                    
+                    if hasattr(module, class_name):
+                        so_class = getattr(module, class_name)
+                        action = menu.addAction(f"{class_name} (from {file_path.stem})")
+                        action.triggered.connect(
+                            lambda checked, c=so_class, d=directory: self._create_scriptable_object_instance(c, d)
+                        )
                 except Exception:
                     # If import fails, just show the class name
                     action = menu.addAction(f"{class_name} (needs import)")
@@ -507,6 +541,9 @@ class {type_name}(ScriptableObject):
             new_index = self.editor_window._file_model.index(str(file_path))
             if new_index.isValid():
                 self.setCurrentIndex(new_index)
+            
+            # Refresh the inspector to show the new ScriptableObject in reference fields
+            self.editor_window._refresh_scriptable_object_fields()
             
             QtWidgets.QMessageBox.information(
                 self, "Scriptable Object Created",
@@ -1984,10 +2021,8 @@ class {class_name}(Script):
             if field_widget:
                 fields_layout.addWidget(field_widget)
         
-        # Add save button
-        save_btn = QtWidgets.QPushButton("Save Changes")
-        save_btn.clicked.connect(self._save_scriptable_object)
-        fields_layout.addWidget(save_btn)
+        # Note: Auto-save is handled in _on_scriptable_object_field_changed
+        # No need for a Save button - changes are persisted immediately
         
         self._components_layout.addWidget(fields_group)
     
@@ -2141,6 +2176,14 @@ class {class_name}(Script):
         # Also update the registry so references use the updated instance
         from src.engine3d.scriptable_object import ScriptableObject
         ScriptableObject.register_instance(self._current_scriptable_object)
+        
+        # Refresh component inspectors so any components referencing this SO
+        # immediately see the updated values (no need to restart or Play/Stop)
+        self._components_dirty = True
+        if hasattr(self, '_selection') and self._selection is not None:
+            obj = self._selection.game_object
+            if obj is not None:
+                self._update_inspector_fields(force_components=True)
     
     def _on_vector_field_changed(self, field_name: str, index: int, value: float, current: list) -> None:
         """Handle when a Vector3 field component changes."""
@@ -2355,6 +2398,26 @@ class {class_name}(Script):
 
     def _mark_components_dirty(self) -> None:
         self._components_dirty = True
+
+    def _refresh_scriptable_object_fields(self) -> None:
+        """Refresh all ScriptableObject reference fields in the inspector.
+        
+        This is called when a new ScriptableObject is created to ensure
+        the new instance appears in all relevant dropdown fields.
+        """
+        # Always mark components as dirty so that the next time inspector fields
+        # are built (or the next tick), they include the new ScriptableObject.
+        # This handles the case where user creates SO from file tree without
+        # having a GameObject selected - the next selection will get fresh fields.
+        self._components_dirty = True
+        
+        # Rebuild the component fields if we have a selected object
+        if self._selection.game_object:
+            self._update_inspector_fields(force_components=True)
+        
+        # Also refresh prefab inspector if we're editing a prefab
+        if hasattr(self, '_current_prefab') and self._current_prefab is not None:
+            self._update_prefab_inspector()
 
     def _clear_component_fields(self, clear_so_state: bool = True) -> None:
         for widget in self._component_fields:
@@ -3953,6 +4016,15 @@ class {class_name}(Script):
         # Sort by name
         instances.sort(key=lambda x: x.name)
         
+        # Helper function to get a unique key for an instance (for comparison)
+        def get_instance_key(instance):
+            if instance is None:
+                return None
+            return (instance.name, instance.source_path)
+        
+        # Get the key for the current value for comparison
+        current_key = get_instance_key(current_value)
+        
         # Add instances to combo
         current_index = 0  # Default to "(None)"
         for i, instance in enumerate(instances):
@@ -3962,11 +4034,10 @@ class {class_name}(Script):
                 display_name = f"{instance.name} ({Path(instance.source_path).stem})"
             combo.addItem(display_name, instance)
             
-            # Check if this is the current value
-            if current_value is not None and instance is current_value:
+            # Check if this is the current value (compare by name and source_path)
+            instance_key = get_instance_key(instance)
+            if current_key is not None and instance_key == current_key:
                 current_index = i + 1  # +1 because of "(None)" option
-            elif current_value is not None and hasattr(current_value, 'name') and instance.name == current_value.name:
-                current_index = i + 1
         
         combo.setCurrentIndex(current_index)
         
@@ -3977,6 +4048,10 @@ class {class_name}(Script):
         
         def on_refresh():
             """Reload all ScriptableObject assets and refresh the combo box."""
+            # Remember current selection by name and path (not by identity)
+            current_data = combo.currentData()
+            current_selection_key = get_instance_key(current_data)
+            
             # Reload assets
             ScriptableObject.load_all_assets(str(self.project_root))
             
@@ -3984,24 +4059,31 @@ class {class_name}(Script):
             new_instances = ScriptableObject.get_by_type(so_type) if so_type else []
             new_instances.sort(key=lambda x: x.name)
             
-            # Remember current selection
-            current_data = combo.currentData()
-            
             # Clear and repopulate
+            combo.blockSignals(True)  # Block signals during update
             combo.clear()
             combo.addItem("(None)", None)
             
-            new_index = 0
+            new_index = 0  # Default to None
             for i, instance in enumerate(new_instances):
                 display_name = instance.name
                 if instance.source_path:
                     display_name = f"{instance.name} ({Path(instance.source_path).stem})"
                 combo.addItem(display_name, instance)
                 
-                if current_data is instance:
+                # Compare by name and source_path, not by identity
+                instance_key = get_instance_key(instance)
+                if current_selection_key is not None and instance_key == current_selection_key:
                     new_index = i + 1
             
             combo.setCurrentIndex(new_index)
+            combo.blockSignals(False)
+            
+            # If selection changed, update the field value
+            new_data = combo.currentData()
+            if get_instance_key(new_data) != current_selection_key:
+                comp.set_inspector_field_value(field_name, new_data)
+                self._mark_scene_dirty()
         
         def on_selection_changed(index: int):
             """Handle when selection changes."""
@@ -4248,7 +4330,11 @@ class {class_name}(Script):
         
         # Add remove button
         remove_btn = QtWidgets.QPushButton("Remove Component")
-        remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component(c))
+        # Check if we're editing a prefab
+        if getattr(getattr(comp, 'game_object', None), '_prefab_edit_target', None) is not None:
+            remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component_from_prefab(c))
+        else:
+            remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component(c))
         layout.addWidget(remove_btn)
         
         return box

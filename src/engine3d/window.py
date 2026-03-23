@@ -602,9 +602,12 @@ class Window3D:
             b.transform._local_position -= normal * push
             # Project b vel: full stop if into, else slide
             if b.get_component(Rigidbody):
-                dot = np.dot(b.get_component(Rigidbody).velocity, normal)
+                from src.types import Vector3
+                vel = b.get_component(Rigidbody).velocity
+                normal_vec = Vector3(normal[0], normal[1], normal[2]) if hasattr(normal, '__len__') else Vector3(normal)
+                dot = Vector3.dot(vel, normal_vec)
                 if dot < 0:
-                    b.get_component(Rigidbody).velocity -= dot * normal
+                    b.get_component(Rigidbody).velocity = vel - normal_vec * dot
             b.transform._mark_dirty()
             # Update colliders (moved from obj._update_cache)
             for c in b.get_components(Collider):
@@ -613,9 +616,12 @@ class Window3D:
             a.transform._local_position += normal * push
             # Project a vel: full stop if into, else slide
             if a.get_component(Rigidbody):
-                dot = np.dot(a.get_component(Rigidbody).velocity, normal)
+                from src.types import Vector3
+                vel = a.get_component(Rigidbody).velocity
+                normal_vec = Vector3(normal[0], normal[1], normal[2]) if hasattr(normal, '__len__') else Vector3(normal)
+                dot = Vector3.dot(vel, normal_vec)
                 if dot < 0:
-                    a.get_component(Rigidbody).velocity -= dot * normal
+                    a.get_component(Rigidbody).velocity = vel - normal_vec * dot
             a.transform._mark_dirty()
             for c in a.get_components(Collider):
                 c.update_bounds()
@@ -626,9 +632,12 @@ class Window3D:
             for obj in (a, b):
                 if not obj.get_component(Rigidbody):
                     continue
-                dot = np.dot(obj.get_component(Rigidbody).velocity, normal)
+                from src.types import Vector3
+                vel = obj.get_component(Rigidbody).velocity
+                normal_vec = Vector3(normal[0], normal[1], normal[2]) if hasattr(normal, '__len__') else Vector3(normal)
+                dot = Vector3.dot(vel, normal_vec)
                 if dot < 0:  # trying to move into wall
-                    obj.get_component(Rigidbody).velocity -= dot * normal  # allow slide
+                    obj.get_component(Rigidbody).velocity = vel - normal_vec * dot  # allow slide
             a.transform._mark_dirty()
             b.transform._mark_dirty()
             for c in a.get_components(Collider):
@@ -703,7 +712,8 @@ class Window3D:
                                         a.transform._local_position = np.copy(last_safe)
                                         a.transform._mark_dirty()
                                         if a.get_component(Rigidbody):
-                                            a.get_component(Rigidbody).velocity = np.zeros(3, dtype=np.float32)
+                                            from src.types import Vector3
+                                            a.get_component(Rigidbody).velocity = Vector3.zero()
                                     hit_solid = True
                                     break
                         if hit_solid:
@@ -1358,9 +1368,9 @@ class Window3D:
                 self._ctx.clear(0.5, 0.6, 1.0)
                 return
             
-            # Rotation-only view (remove translation)
+            # Rotation-only view (remove translation from column-major matrix)
             view_no_trans = view.copy()
-            view_no_trans[3, :3] = 0
+            view_no_trans[:3, 3] = 0  # Translation is in the 4th column (first 3 rows)
             
             mvp = view_no_trans @ projection
             
@@ -1402,9 +1412,9 @@ class Window3D:
                 theta = 2 * np.pi * seg / segs
                 x = np.cos(theta) * r
                 z = np.sin(theta) * r
-                # Equirectangular: u=lon (0-1), v=lat (0=bottom, 1=top)
+                # Equirectangular: u=lon (0-1), v=lat (0=top, 1=bottom for OpenGL tex coords)
                 u = seg / segs
-                v = 1.0 - ring / rings  # Invert: top of texture = sky
+                v = ring / rings  # OpenGL textures have origin at bottom-left
                 verts.extend([x, y, z, u, v])
         
         for ring in range(rings):
@@ -1415,20 +1425,24 @@ class Window3D:
                 i3 = i2 + 1
                 idxs.extend([i0, i2, i1, i1, i2, i3])
         
-        # Build interleaved: position(3f) + color(3f) + texcoord(2f) = 8 floats
+        # Build interleaved: position(3f) + normal(3f) + color(4f) + texcoord(2f) = 12 floats
         # Color is white since texture provides colors
+        # Normals point inward for inside view of skybox sphere
         full_verts = []
         for i in range(0, len(verts), 5):
             x, y, z, u, v = verts[i:i+5]
-            full_verts.extend([x, y, z, 1.0, 1.0, 1.0, u, v])  # white color
+            # Inward normal (normalized)
+            length = np.sqrt(x*x + y*y + z*z)
+            nx, ny, nz = -x/length, -y/length, -z/length
+            full_verts.extend([x, y, z, nx, ny, nz, 1.0, 1.0, 1.0, 1.0, u, v])
         
         vbo = self._ctx.buffer(np.array(full_verts, dtype='f4').tobytes())
         ibo = self._ctx.buffer(np.array(idxs, dtype='i4').tobytes())
         
-        # Layout: position(3f) + color(3f) + texcoord(2f)
+        # Layout: position(3f) + normal(3f) + color(4f) + texcoord(2f)
         return self._ctx.vertex_array(
             self._program,
-            [(vbo, '3f 3f 2f', 'in_position', 'in_color', 'in_texcoord')],
+            [(vbo, '3f 3f 4f 2f', 'in_position', 'in_normal', 'in_color', 'in_uv')],
             ibo
         )
     

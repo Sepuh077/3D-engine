@@ -1,6 +1,7 @@
 import numpy as np
 
 from src.engine3d.component import Component, Time, InspectorField
+from src.types import Vector3
 
 
 class Rigidbody(Component):
@@ -15,16 +16,34 @@ class Rigidbody(Component):
 
     def __init__(self, use_gravity: bool = True, is_kinematic: bool = False, is_static: bool = False, drag: float = 0.0):
         super().__init__()
-        self.velocity = np.zeros(3, dtype=np.float32)
+        self._velocity = Vector3.zero()
         self.use_gravity = use_gravity
         self.is_kinematic = is_kinematic
         self.mass = 1.0
         self.is_static = is_static
         self.drag = drag
 
+    @property
+    def velocity(self) -> Vector3:
+        """Get the velocity as a Vector3."""
+        return self._velocity
+    
+    @velocity.setter
+    def velocity(self, value):
+        """Set the velocity from Vector3, numpy array, tuple, or list."""
+        if isinstance(value, Vector3):
+            self._velocity = value
+        elif isinstance(value, np.ndarray):
+            self._velocity = Vector3(value)
+        elif isinstance(value, (tuple, list)):
+            self._velocity = Vector3(value)
+        else:
+            raise TypeError(f"velocity must be Vector3, numpy array, tuple, or list, got {type(value)}")
+
     def add_force(self, force):
         """Simple force application."""
-        self.velocity += np.array(force, dtype=np.float32) / self.mass
+        force_vec = Vector3(force) if not isinstance(force, Vector3) else force
+        self._velocity = self._velocity + force_vec / self.mass
 
     def update(self):
         if self.is_static or self.is_kinematic:
@@ -35,15 +54,23 @@ class Rigidbody(Component):
         if self.drag > 0.0:
             # Apply drag to gradually decrease velocity
             drag_factor = max(0.0, 1.0 - self.drag * delta_time)
-            self.velocity[0] *= drag_factor
-            self.velocity[2] *= drag_factor
+            new_x = self._velocity.x * drag_factor
+            new_z = self._velocity.z * drag_factor
             if not self.use_gravity:
-                self.velocity[1] *= drag_factor
+                new_y = self._velocity.y * drag_factor
+            else:
+                new_y = self._velocity.y
+            self._velocity = Vector3(new_x, new_y, new_z)
 
         if self.use_gravity:
             # Simple gravity: 9.81 m/s^2 downwards
-            self.velocity[1] -= 9.81 * delta_time
+            self._velocity = Vector3(
+                self._velocity.x,
+                self._velocity.y - 9.81 * delta_time,
+                self._velocity.z
+            )
 
-        if self.game_object and np.any(self.velocity):
+        if self.game_object and (self._velocity.x != 0 or self._velocity.y != 0 or self._velocity.z != 0):
             # Apply velocity to position
-            self.game_object.transform.move(*(self.velocity * delta_time))
+            movement = self._velocity * delta_time
+            self.game_object.transform.move(movement.x, movement.y, movement.z)

@@ -176,6 +176,9 @@ class ScriptableObject(metaclass=ScriptableObjectMeta):
         """
         Load a ScriptableObject from a file.
         
+        If an instance with the same name already exists in the registry,
+        it will be updated in place to preserve existing references.
+        
         Args:
             path: Path to the .asset file
             
@@ -185,6 +188,32 @@ class ScriptableObject(metaclass=ScriptableObjectMeta):
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         
+        instance_name = data.get("_name", "")
+        
+        # Check if an instance with this name already exists in the registry
+        # If so, update it in place to preserve references from components
+        existing_instance = ScriptableObject._instances.get(instance_name)
+        if existing_instance is not None:
+            # Update the existing instance with new data
+            existing_instance._source_path = path
+            
+            # Restore field values
+            fields_data = data.get("fields", {})
+            for field_name, value in fields_data.items():
+                deserialized = cls._deserialize_value(value)
+                try:
+                    existing_instance.set_inspector_field_value(field_name, deserialized)
+                except (AttributeError, ValueError):
+                    # Field might not exist anymore, skip it
+                    pass
+            
+            # Update _id if present
+            if "_id" in data:
+                existing_instance._id = data["_id"]
+            
+            return existing_instance
+        
+        # No existing instance, create a new one
         instance = cls._from_dict(data)
         instance._source_path = path
         
@@ -398,13 +427,35 @@ class ScriptableObject(metaclass=ScriptableObjectMeta):
         """
         Get all ScriptableObject instances of a specific type.
         
+        This method handles the case where the same class may be loaded
+        multiple times with different module names (e.g., during dynamic
+        scanning). It combines both isinstance check and class name matching
+        to ensure all instances of the same logical type are returned.
+        
         Args:
             scriptable_type: The type to filter by
             
         Returns:
             List of ScriptableObject instances of the specified type
         """
-        return [inst for inst in cls._instances.values() if isinstance(inst, scriptable_type)]
+        type_name = scriptable_type.__name__
+        
+        # Collect instances that match either by isinstance or by class name
+        # (handles dynamic loading with different module names)
+        seen_ids = set()
+        instances = []
+        
+        for inst in cls._instances.values():
+            # Check if already added
+            if id(inst) in seen_ids:
+                continue
+            
+            # Match by isinstance or by class name
+            if isinstance(inst, scriptable_type) or type(inst).__name__ == type_name:
+                seen_ids.add(id(inst))
+                instances.append(inst)
+        
+        return instances
     
     @classmethod
     def unregister(cls, name: str) -> None:
@@ -494,10 +545,24 @@ class ScriptableObject(metaclass=ScriptableObjectMeta):
                 # Check if already loaded (avoid duplicates)
                 if instance_name in cls._instances:
                     existing = cls._instances[instance_name]
-                    # If same source path, skip
+                    # If same source path, skip loading but return the existing instance
                     if hasattr(existing, '_source_path') and existing._source_path == asset_path:
                         loaded_instances.append(existing)
                         continue
+                    # If different source path, update the existing instance in place
+                    # to preserve references from components
+                    existing._source_path = asset_path
+                    fields_data = data.get("fields", {})
+                    for field_name, value in fields_data.items():
+                        deserialized = cls._deserialize_value(value)
+                        try:
+                            existing.set_inspector_field_value(field_name, deserialized)
+                        except (AttributeError, ValueError):
+                            pass
+                    if "_id" in data:
+                        existing._id = data["_id"]
+                    loaded_instances.append(existing)
+                    continue
                 
                 # Try to find the type class
                 so_class = ScriptableObjectMeta.get_type(type_name)

@@ -11,6 +11,7 @@ from src.engine3d.object3d import create_cube
 from src.engine3d.window import Window3D
 from src.physics.rigidbody import Rigidbody
 from src.physics.collider import BoxCollider, CollisionMode
+from src.types import Vector3
 
 class HeadlessWindow(Window3D):
     """
@@ -33,7 +34,7 @@ def test_continuous_collision_sliding():
     obj_a = create_cube(size=1.0, position=(0.0, 1.0, 0.0))
     rb_a = Rigidbody(use_gravity=False, is_kinematic=False, is_static=False)
     # Fast velocity: right and down
-    rb_a.velocity = np.array([10.0, -10.0, 0.0], dtype=np.float32) 
+    rb_a.velocity = Vector3(10.0, -10.0, 0.0)
     col_a = BoxCollider()
     col_a.collision_mode = CollisionMode.CONTINUOUS
     
@@ -78,7 +79,7 @@ def test_continuous_collision_sliding():
     print(f"Position after collision: {obj_a.transform.position}")
     
     # Should still have X velocity
-    assert rb_a.velocity[0] > 0, "X velocity was zeroed out!"
+    assert rb_a.velocity.x > 0, "X velocity was zeroed out!"
     # Position should have advanced in X
     assert obj_a.transform.position[0] > 0.0, "Did not slide in X"
     # Y position should be pushed out

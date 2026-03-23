@@ -11,6 +11,7 @@ from src.engine3d.object3d import create_cube, create_plane
 from src.engine3d.window import Window3D
 from src.physics.rigidbody import Rigidbody
 from src.physics.collider import BoxCollider, CollisionMode
+from src.types import Vector3
 
 class HeadlessWindow(Window3D):
     """
@@ -34,7 +35,7 @@ def test_physics_movement_and_collision_using_window_logic():
     obj_a = create_cube(size=1.0, position=(0.0, 0.0, 0.0))
     rb_a = Rigidbody(use_gravity=False, is_kinematic=False, is_static=False)
     # Give it velocity to the right (positive X)
-    rb_a.velocity = np.array([2.0, 0.0, 0.0], dtype=np.float32)
+    rb_a.velocity = Vector3(2.0, 0.0, 0.0)
     # Use CONTINUOUS to test that path too if desired, but default is fine
     col_a = BoxCollider()
     
@@ -80,7 +81,7 @@ def test_physics_movement_and_collision_using_window_logic():
         window._process_collisions()
         
         # If collision happened, velocity should be affected
-        if np.linalg.norm(rb_a.velocity) < 1e-3:
+        if rb_a.velocity.magnitude < 1e-3:
             print(f"Object stopped at step {step + 1}, position: {obj_a.transform.position}")
             collided = True
             break
@@ -99,7 +100,7 @@ def test_continuous_collision_using_window_logic():
     # Object A: moving VERY fast, might tunnel if not for continuous
     obj_a = create_cube(size=1.0, position=(0.0, 0.0, 0.0))
     rb_a = Rigidbody(use_gravity=True, is_kinematic=False, is_static=False)
-    rb_a.velocity = np.array([100, 0, 0], dtype=np.float64)
+    rb_a.velocity = Vector3(100, 0, 0)
     col_a = BoxCollider()
     col_a.collision_mode = CollisionMode.CONTINUOUS
     

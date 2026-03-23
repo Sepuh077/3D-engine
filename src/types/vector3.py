@@ -424,6 +424,17 @@ class Vector3:
     
     def __len__(self) -> int:
         return 3
+
+    def __setitem__(self, index: int, value: float):
+        """Allow indexing: vector[0], vector[1], vector[2]."""
+        if index == 0:
+            self.x = value
+        elif index == 1:
+            self.y = value
+        elif index == 2:
+            self.z = value
+        else:
+            raise IndexError("Index out of range")
     
     def __getitem__(self, index: int) -> float:
         """Allow indexing: vector[0], vector[1], vector[2]."""
