@@ -14,6 +14,7 @@ import numpy as np
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union, TYPE_CHECKING
+from pathlib import Path
 
 from .gameobject import GameObject
 from .object3d import Object3D
@@ -280,6 +281,7 @@ class Window3D:
                  height: int = 600, 
                  title: str = "3D Engine",
                  resizable: bool = False,
+                 project_root: Union[str, Path] = "..",
                  vsync: bool = True,
                  background_color: ColorType = (0.1, 0.1, 0.15),
                  use_pygame_window: bool = True,
@@ -301,6 +303,7 @@ class Window3D:
         self.width = width
         self.height = height
         self.title = title
+        self.project_root = project_root if isinstance(project_root, Path) else Path(project_root).resolve()
         self.background_color = background_color
         
         # Initialize pygame
@@ -459,42 +462,9 @@ class Window3D:
             import os
             from .scriptable_object import ScriptableObject
             
-            # Try to find the project root
-            # First check if there's a common project structure
-            cwd = os.getcwd()
-            
-            # Try common locations for project root
-            project_roots = [
-                cwd,
-                os.path.dirname(cwd) if os.path.isdir(cwd) else None,
-            ]
-            
-            # Add parent directories that might be project root
-            current = cwd
-            for _ in range(3):  # Check up to 3 levels up
-                if current and os.path.isdir(current):
-                    project_roots.append(current)
-                    current = os.path.dirname(current)
-            
-            # Also check if running from examples directory
-            if 'examples' in cwd:
-                parent = os.path.dirname(cwd)
-                if parent and os.path.isdir(parent):
-                    project_roots.append(parent)
-            
-            # Try to load assets from each potential project root
-            for project_root in project_roots:
-                if project_root and os.path.isdir(project_root):
-                    # Check if there are any .asset files
-                    for root, dirs, files in os.walk(project_root):
-                        if any(f.endswith('.asset') for f in files):
-                            loaded = ScriptableObject.load_all_assets(project_root)
-                            if loaded:
-                                print(f"Loaded {len(loaded)} ScriptableObject assets from {project_root}")
-                            break  # Only load from the first project root with assets
-                    else:
-                        continue
-                    break
+            loaded = ScriptableObject.load_all_assets(self.project_root)
+            if loaded:
+                print(f"Loaded {len(loaded)} ScriptableObject assets from {self.project_root}")
                     
         except Exception as e:
             # Silently ignore errors during loading - assets might not exist

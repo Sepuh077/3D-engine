@@ -41,7 +41,7 @@ class FPSCameraScene(Scene3D):
         stairs.add_component(Rigidbody(is_static=True))
         
         # Camera setup - first person style
-        self.camera_obj = self.add_object(create_cube(1, (0, 0.5, 0), color=Color.WHITE))
+        self.camera_obj = self.add_object(create_cube(1, (0, 50, 0), color=Color.WHITE))
         self.camera_obj.add_component(BoxCollider())
         self.rb = self.camera_obj.add_component(Rigidbody(use_gravity=True, drag=10.0))
         self.camera.look_at(self.camera_obj.transform.position)

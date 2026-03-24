@@ -2889,14 +2889,7 @@ class {class_name}(Script):
             traceback_text = traceback.format_exc()
             
             # Show error dialog with details
-            msg_box = QtWidgets.QMessageBox(self)
-            msg_box.setWindowTitle("Play Mode Error")
-            msg_box.setIcon(QtWidgets.QMessageBox.Icon.Critical)
-            msg_box.setText("An error occurred while starting play mode.")
-            msg_box.setInformativeText(f"Error: {error_msg}\n\nPlay mode could not be started.")
-            msg_box.setDetailedText(traceback_text)
-            msg_box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
-            msg_box.exec()
+            self._console_widget.log(traceback_text)
 
     def _on_pause_clicked(self) -> None:
         """Toggle pause state."""
@@ -3102,6 +3095,7 @@ class {class_name}(Script):
             width=int(max(1, self._viewport.width() * dpr)),
             height=int(max(1, self._viewport.height() * dpr)),
             title="Engine3D Editor Viewport",
+            project_root=self.project_root,
             resizable=True,
             use_pygame_window=False,
             use_pygame_events=False,
