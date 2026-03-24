@@ -22,7 +22,7 @@ Example:
 """
 
 from .window import Window3D
-from .scene import Scene3D
+from .scene import Scene3D, SceneManager
 from .gameobject import GameObject, Prefab
 from .component import Component, Script, WaitForSeconds, WaitEndOfFrame, Time, InspectorField, InspectorFieldType, Tag
 from .transform import Transform
@@ -95,7 +95,8 @@ from .drawing import (
 
 __all__ = [
     'Window3D',
-    'Scene3D', 
+    'Scene3D',
+    'SceneManager',
     'GameObject',
     'Prefab',
     'run_editor',

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Iterable, Any, List, Tuple
 
+import sys
 import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -50,28 +51,340 @@ class NoWheelSlider(QtWidgets.QSlider):
         event.ignore()
 
 
-class FileTreeView(QtWidgets.QTreeView):
-    """Custom tree view for files that supports drops from hierarchy to create prefabs."""
+class ConsoleWidget(QtWidgets.QWidget):
+    """Console widget for displaying logs, warnings, and errors."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._setup_ui()
+        
+        # Store original stdout/stderr
+        self._original_stdout = sys.stdout
+        self._original_stderr = sys.stderr
+        
+        # Redirect stdout/stderr to console
+        sys.stdout = self
+        sys.stderr = self
+        
+        # Log levels
+        self._log_colors = {
+            'DEBUG': '#888888',
+            'INFO': '#ffffff',
+            'WARNING': '#ffaa00',
+            'ERROR': '#ff4444',
+            'CRITICAL': '#ff0000',
+        }
+    
+    def _setup_ui(self) -> None:
+        """Set up the console UI."""
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+        
+        # Toolbar with clear button and filter options
+        toolbar = QtWidgets.QHBoxLayout()
+        toolbar.setSpacing(4)
+        
+        # Clear button
+        clear_btn = QtWidgets.QPushButton("Clear", self)
+        clear_btn.setFixedWidth(60)
+        clear_btn.clicked.connect(self.clear)
+        toolbar.addWidget(clear_btn)
+        
+        # Filter checkboxes
+        self._show_info = QtWidgets.QCheckBox("Info", self)
+        self._show_info.setChecked(True)
+        self._show_info.stateChanged.connect(self._apply_filter)
+        toolbar.addWidget(self._show_info)
+        
+        self._show_warnings = QtWidgets.QCheckBox("Warnings", self)
+        self._show_warnings.setChecked(True)
+        self._show_warnings.stateChanged.connect(self._apply_filter)
+        toolbar.addWidget(self._show_warnings)
+        
+        self._show_errors = QtWidgets.QCheckBox("Errors", self)
+        self._show_errors.setChecked(True)
+        self._show_errors.stateChanged.connect(self._apply_filter)
+        toolbar.addWidget(self._show_errors)
+        
+        toolbar.addStretch(1)
+        
+        layout.addLayout(toolbar)
+        
+        # Text edit for log output
+        self._text_edit = QtWidgets.QTextEdit(self)
+        self._text_edit.setReadOnly(True)
+        self._text_edit.setFont(QtGui.QFont("Consolas", 9))
+        self._text_edit.setStyleSheet("""
+            QTextEdit {
+                background-color: #1a1a1a;
+                color: #ffffff;
+                border: 1px solid #333;
+            }
+        """)
+        layout.addWidget(self._text_edit, 1)
+        
+        # Store all messages for filtering
+        self._all_messages: list[tuple[str, str]] = []  # (level, message)
+    
+    def write(self, text: str) -> None:
+        """Write text to console (used for stdout/stderr redirection)."""
+        if not text or text.strip() == '':
+            return
+        
+        # Determine log level from text
+        level = 'INFO'
+        upper_text = text.upper()
+        if 'ERROR' in upper_text or 'CRITICAL' in upper_text or 'EXCEPTION' in upper_text:
+            level = 'ERROR'
+        elif 'WARNING' in upper_text or 'WARN' in upper_text:
+            level = 'WARNING'
+        elif 'DEBUG' in upper_text:
+            level = 'DEBUG'
+        
+        # Store message
+        self._all_messages.append((level, text))
+        
+        # Display if passes filter
+        self._display_message(level, text)
+        
+        # Also write to original stdout
+        self._original_stdout.write(text)
+    
+    def _display_message(self, level: str, text: str) -> None:
+        """Display a message with appropriate color."""
+        # Check filters
+        if level == 'INFO' and not self._show_info.isChecked():
+            return
+        if level == 'WARNING' and not self._show_warnings.isChecked():
+            return
+        if level == 'ERROR' and not self._show_errors.isChecked():
+            return
+        
+        color = self._log_colors.get(level, '#ffffff')
+        
+        # Add timestamp
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        
+        # Format: [HH:MM:SS] [LEVEL] message
+        formatted = f'<span style="color: #666;">[{timestamp}]</span> <span style="color: {color};">{self._escape_html(text)}</span>'
+        
+        self._text_edit.append(formatted)
+        
+        # Auto-scroll to bottom
+        scrollbar = self._text_edit.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+    
+    def _escape_html(self, text: str) -> str:
+        """Escape HTML special characters."""
+        return (text
+                .replace('&', '&amp;')
+                .replace('<', '&lt;')
+                .replace('>', '&gt;')
+                .replace('"', '&quot;'))
+    
+    def _apply_filter(self) -> None:
+        """Re-apply filters and refresh display."""
+        self._text_edit.clear()
+        for level, text in self._all_messages:
+            self._display_message(level, text)
+    
+    def clear(self) -> None:
+        """Clear the console."""
+        self._text_edit.clear()
+        self._all_messages.clear()
+    
+    def flush(self) -> None:
+        """Flush the console (required for file-like interface)."""
+        self._original_stdout.flush()
+    
+    def log(self, message: str, level: str = 'INFO') -> None:
+        """Log a message with specified level."""
+        self._all_messages.append((level, message + '\n'))
+        self._display_message(level, message + '\n')
+    
+    def restore_stdout(self) -> None:
+        """Restore original stdout/stderr."""
+        sys.stdout = self._original_stdout
+        sys.stderr = self._original_stderr
+
+
+class FileIconView(QtWidgets.QListView):
+    """Custom icon view for files that supports drops from hierarchy to create prefabs.
+    
+    Features:
+    - Grid layout with large icons (no parent folder navigation)
+    - Restricted to project root directory
+    - Right-click context menu on empty space
+    - Drag and drop support for prefabs
+    """
     prefab_created = QtCore.Signal(str, str)  # (gameobject_name, prefab_path)
     prefab_instantiated = QtCore.Signal(str)  # (prefab_path)
+    file_double_clicked = QtCore.Signal(str)  # (file_path)
+    path_changed = QtCore.Signal(str)  # (current_path)
+    
+    # Icon size for file/folder items
+    ICON_SIZE = 64
+    GRID_SPACING = 16
     
     def __init__(self, editor_window, parent=None):
         super().__init__(parent)
         self.editor_window = editor_window
+        self._current_path = editor_window.project_root
+        
+        # Set up icon mode (grid layout)
+        self.setViewMode(QtWidgets.QListView.ViewMode.IconMode)
+        self.setIconSize(QtCore.QSize(self.ICON_SIZE, self.ICON_SIZE))
+        self.setGridSize(QtCore.QSize(self.ICON_SIZE + 40, self.ICON_SIZE + 50))
+        self.setSpacing(self.GRID_SPACING)
+        self.setResizeMode(QtWidgets.QListView.ResizeMode.Adjust)
+        self.setWrapping(True)
+        self.setFlow(QtWidgets.QListView.Flow.LeftToRight)
+        
+        # Selection and drag-drop settings
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
         self.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
-        self._drag_source_item = None
+        self.setMovement(QtWidgets.QListView.Movement.Static)
+        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.DragDrop)
+        
+        # Enable uniform item sizes for better layout
+        self.setUniformItemSizes(True)
+        
+        # Context menu
+        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.DefaultContextMenu)
+        
+        # Double click to navigate or open
+        self.doubleClicked.connect(self._on_double_clicked)
+        
+        # Track drag initiation
+        self._drag_start_pos = None
+        self._drag_start_index = None
+    
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        """Handle mouse press to track potential drag start."""
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            self._drag_start_pos = event.pos()
+            self._drag_start_index = self.indexAt(event.pos())
+        super().mousePressEvent(event)
+    
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
+        """Handle mouse move to initiate drag if moved far enough."""
+        if (event.buttons() & QtCore.Qt.MouseButton.LeftButton and 
+            self._drag_start_pos is not None and 
+            self._drag_start_index is not None and
+            self._drag_start_index.isValid()):
+            
+            # Check if moved far enough to start drag
+            distance = (event.pos() - self._drag_start_pos).manhattanLength()
+            if distance > QtWidgets.QApplication.startDragDistance():
+                # Start drag
+                self._start_drag(self._drag_start_index)
+                self._drag_start_pos = None
+                self._drag_start_index = None
+                return
+        
+        super().mouseMoveEvent(event)
+    
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
+        """Handle mouse release to clear drag tracking."""
+        self._drag_start_pos = None
+        self._drag_start_index = None
+        super().mouseReleaseEvent(event)
+    
+    def _start_drag(self, index: QtCore.QModelIndex) -> None:
+        """Start a drag operation from the given index."""
+        if not index.isValid():
+            return
+        
+        path = self.model().filePath(index)
+        ext = Path(path).suffix.lower()
+        
+        # Create MIME data with file path
+        mime_data = QtCore.QMimeData()
+        
+        if ext == '.prefab':
+            # Prefab files - can be dropped on hierarchy or viewport
+            mime_data.setText(f"prefab:{path}")
+        else:
+            # All other files - emit file path for viewport to handle
+            from PySide6.QtCore import QUrl
+            url = QUrl.fromLocalFile(path)
+            mime_data.setUrls([url])
+            mime_data.setText(path)
+        
+        drag = QtGui.QDrag(self)
+        drag.setMimeData(mime_data)
+        
+        # Create drag pixmap
+        pixmap = QtGui.QPixmap(120, 24)
+        pixmap.fill(QtGui.QColor(100, 150, 200))
+        painter = QtGui.QPainter(pixmap)
+        painter.setPen(QtGui.QColor(255, 255, 255))
+        painter.drawText(5, 17, Path(path).name[:20])
+        painter.end()
+        drag.setPixmap(pixmap)
+        
+        drag.exec(QtCore.Qt.DropAction.CopyAction)
+    
+    def set_current_path(self, path: Path) -> None:
+        """Set the current directory path, restricted to project root."""
+        # Normalize and validate path is within project root
+        try:
+            path = path.resolve()
+            project_root = self.editor_window.project_root.resolve()
+            
+            # Ensure path is within project root
+            if not str(path).startswith(str(project_root)):
+                path = project_root
+            
+            self._current_path = path
+            
+            # Update the model's root index
+            if hasattr(self, 'model') and self.model():
+                index = self.model().index(str(path))
+                self.setRootIndex(index)
+            
+            # Emit signal for path change
+            self.path_changed.emit(str(self._current_path))
+        except (ValueError, OSError):
+            # Fall back to project root if path is invalid
+            self._current_path = self.editor_window.project_root
+            if hasattr(self, 'model') and self.model():
+                index = self.model().index(str(self._current_path))
+                self.setRootIndex(index)
+            self.path_changed.emit(str(self._current_path))
+    
+    def get_current_path(self) -> Path:
+        """Get the current directory path."""
+        return self._current_path
+    
+    def _on_double_clicked(self, index: QtCore.QModelIndex) -> None:
+        """Handle double click - navigate into folders or emit signal for files."""
+        if not index.isValid():
+            return
+        
+        path = self.model().filePath(index)
+        
+        if self.model().isDir(index):
+            # Navigate into directory (if within project root)
+            new_path = Path(path)
+            project_root = self.editor_window.project_root.resolve()
+            
+            # Only navigate if still within project root
+            if str(new_path.resolve()).startswith(str(project_root)):
+                self.set_current_path(new_path)
+        else:
+            # Emit signal for file open
+            self.file_double_clicked.emit(path)
     
     def dragEnterEvent(self, event: QtGui.QDragEnterEvent) -> None:
         """Accept drops from hierarchy tree."""
-        # Check if this is a drag from hierarchy (has our custom MIME data)
         if event.mimeData().hasText():
-            # Could be from hierarchy - accept
             event.acceptProposedAction()
         elif event.mimeData().hasUrls():
-            # File URLs - accept for normal file operations
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -86,15 +399,11 @@ class FileTreeView(QtWidgets.QTreeView):
     def dropEvent(self, event: QtGui.QDropEvent) -> None:
         """Handle drop from hierarchy to create prefab."""
         if event.mimeData().hasText():
-            # This is a drop from hierarchy - create prefab
             text = event.mimeData().text()
-            # Format: "gameobject:<object_id>" or similar
             if text.startswith("gameobject:"):
                 obj_id = text.split(":", 1)[1]
-                # Find the GameObject by ID
                 for obj in self.editor_window._scene.objects:
                     if obj._id == obj_id:
-                        # Create prefab at drop location
                         self._create_prefab_from_gameobject(obj)
                         event.acceptProposedAction()
                         return
@@ -107,107 +416,101 @@ class FileTreeView(QtWidgets.QTreeView):
         from PySide6 import QtWidgets
         from src.engine3d.gameobject import Prefab
         
-        # Get the drop location (current directory in file view)
-        index = self.currentIndex()
-        if index.isValid():
-            path = self.editor_window._file_model.filePath(index)
-            if not self.editor_window._file_model.isDir(index):
-                # If file selected, use its directory
-                path = str(Path(path).parent)
-        else:
-            # Use project root
-            path = str(self.editor_window.project_root)
+        # Use current directory
+        directory = str(self._current_path)
         
         # Default filename based on GameObject name
         default_name = f"{game_object.name}.prefab"
-        default_path = str(Path(path) / default_name)
+        default_path = str(Path(directory) / default_name)
         
-        # Ask for save location
         file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            "Save Prefab",
-            default_path,
-            "Prefab Files (*.prefab)"
+            self, "Save Prefab", default_path, "Prefab Files (*.prefab)"
         )
         
         if file_path:
             try:
-                # Create the prefab
                 prefab = Prefab.create_from_gameobject(game_object, file_path)
-                
-                # Link original GameObject to the prefab
                 prefab.register_instance(game_object)
                 
-                # Refresh file view
-                self.editor_window._file_model.setRootPath(str(self.editor_window.project_root))
+                # Refresh view
+                self.model().setRootPath(str(self.editor_window.project_root))
                 
-                # Select the new prefab file
-                new_index = self.editor_window._file_model.index(file_path)
+                # Select the new file
+                new_index = self.model().index(file_path)
                 if new_index.isValid():
                     self.setCurrentIndex(new_index)
                 
-                # Refresh hierarchy to show prefab connection (blue font)
                 self.editor_window._refresh_hierarchy()
-                
-                # Update inspector to show prefab connection text
                 self.editor_window._update_inspector_fields(force_components=True)
                 
-                # Show success message
-                QtWidgets.QMessageBox.information(
-                    self, "Prefab Created",
-                    f"Prefab '{game_object.name}' saved to:\n{file_path}"
-                )
-                
+                # Log success to console
+                if hasattr(self.editor_window, '_console_widget') and self.editor_window._console_widget:
+                    self.editor_window._console_widget.log(f"Prefab '{game_object.name}' saved to {file_path}", 'INFO')
             except Exception as e:
-                QtWidgets.QMessageBox.critical(
-                    self, "Error", f"Failed to create prefab:\n{e}"
-                )
+                # Log error to console
+                error_msg = f"Failed to create prefab: {e}"
+                if hasattr(self.editor_window, '_console_widget') and self.editor_window._console_widget:
+                    self.editor_window._console_widget.log(error_msg, 'ERROR')
+                    self.editor_window._bottom_tab_widget.setCurrentIndex(1)
+                else:
+                    print(error_msg)
     
     def startDrag(self, supported_actions) -> None:
-        """Start a drag operation."""
+        """Start a drag operation - supports all files for viewport drop and prefabs for hierarchy."""
         index = self.currentIndex()
         if index.isValid():
-            path = self.editor_window._file_model.filePath(index)
+            path = self.model().filePath(index)
             ext = Path(path).suffix.lower()
             
-            # For .prefab files, create custom MIME data
+            # Create MIME data with file path
+            mime_data = QtCore.QMimeData()
+            
             if ext == '.prefab':
-                mime_data = QtCore.QMimeData()
+                # Prefab files - can be dropped on hierarchy or viewport
                 mime_data.setText(f"prefab:{path}")
-                
-                drag = QtGui.QDrag(self)
-                drag.setMimeData(mime_data)
-                
-                # Set a simple pixmap
-                pixmap = QtGui.QPixmap(100, 20)
-                pixmap.fill(QtGui.QColor(100, 150, 200))
-                painter = QtGui.QPainter(pixmap)
-                painter.drawText(5, 15, Path(path).name)
-                painter.end()
-                drag.setPixmap(pixmap)
-                
-                drag.exec(QtCore.Qt.DropAction.CopyAction)
-                return
+            else:
+                # All other files - emit file path for viewport to handle
+                # Also add as URL for compatibility
+                from PySide6.QtCore import QUrl
+                url = QUrl.fromLocalFile(path)
+                mime_data.setUrls([url])
+                # Also set as text for fallback
+                mime_data.setText(path)
+            
+            drag = QtGui.QDrag(self)
+            drag.setMimeData(mime_data)
+            
+            # Create drag pixmap
+            pixmap = QtGui.QPixmap(120, 24)
+            pixmap.fill(QtGui.QColor(100, 150, 200))
+            painter = QtGui.QPainter(pixmap)
+            painter.setPen(QtGui.QColor(255, 255, 255))
+            painter.drawText(5, 17, Path(path).name[:20])  # Truncate long names
+            painter.end()
+            drag.setPixmap(pixmap)
+            
+            drag.exec(QtCore.Qt.DropAction.CopyAction)
+            return
         
         super().startDrag(supported_actions)
     
     def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
-        """Handle right-click context menu."""
+        """Handle right-click context menu - works on empty space too."""
         menu = QtWidgets.QMenu(self)
         
-        # Get the clicked index
+        # Get the clicked index (may be invalid if clicked on empty space)
         index = self.indexAt(event.pos())
         
-        # Determine the directory to use
+        # Determine the directory to use for creation operations
         if index.isValid():
-            path = self.editor_window._file_model.filePath(index)
-            if self.editor_window._file_model.isDir(index):
+            path = self.model().filePath(index)
+            if self.model().isDir(index):
                 directory = path
             else:
                 directory = str(Path(path).parent)
         else:
-            # Clicked in empty area, use project root
-            directory = str(self.editor_window.project_root)
+            # Clicked in empty area - use current directory
+            directory = str(self._current_path)
         
         # Add "Create" submenu
         create_menu = menu.addMenu("Create")
@@ -215,6 +518,12 @@ class FileTreeView(QtWidgets.QTreeView):
         # Add folder creation
         create_folder_action = create_menu.addAction("Folder")
         create_folder_action.triggered.connect(lambda: self._create_folder(directory))
+        
+        create_menu.addSeparator()
+        
+        # Add Scene creation
+        create_scene_action = create_menu.addAction("New Scene")
+        create_scene_action.triggered.connect(lambda: self._create_new_scene(directory))
         
         create_menu.addSeparator()
         
@@ -227,18 +536,16 @@ class FileTreeView(QtWidgets.QTreeView):
         # Add ScriptableObject creation submenu
         so_menu = create_menu.addMenu("Scriptable Object")
         
-        # Add "New Scriptable Object Type..." option
         new_so_type_action = so_menu.addAction("New Type...")
         new_so_type_action.triggered.connect(lambda: self._create_new_scriptable_object_type(directory))
         
         so_menu.addSeparator()
         
-        # Find all ScriptableObject types and add them to the menu
         self._add_scriptable_object_types_to_menu(so_menu, directory)
         
-        # Add prefab creation option if a .prefab file is selected
+        # Add file-specific options if clicked on a file
         if index.isValid():
-            path = self.editor_window._file_model.filePath(index)
+            path = self.model().filePath(index)
             ext = Path(path).suffix.lower()
             
             if ext == '.prefab':
@@ -250,22 +557,63 @@ class FileTreeView(QtWidgets.QTreeView):
                 menu.addSeparator()
                 edit_action = menu.addAction("Edit Scriptable Object")
                 edit_action.triggered.connect(lambda: self._edit_scriptable_object(path))
+            
+            elif ext == '.scene':
+                menu.addSeparator()
+                open_scene_action = menu.addAction("Open Scene")
+                open_scene_action.triggered.connect(lambda: self._load_scene_with_check(Path(path)))
         
+        # Show the menu at the global position
         menu.exec(event.globalPos())
     
     def _create_folder(self, directory: str) -> None:
         """Create a new folder in the specified directory."""
-        name, ok = QtWidgets.QInputDialog.getText(
-            self, "New Folder", "Enter folder name:"
-        )
+        name, ok = QtWidgets.QInputDialog.getText(self, "New Folder", "Enter folder name:")
         if ok and name.strip():
             folder_path = Path(directory) / name.strip()
             try:
                 folder_path.mkdir(parents=True, exist_ok=True)
-                # Refresh file view
-                self.editor_window._file_model.setRootPath(str(self.editor_window.project_root))
+                self.model().setRootPath(str(self.editor_window.project_root))
             except Exception as e:
                 QtWidgets.QMessageBox.critical(self, "Error", f"Failed to create folder:\n{e}")
+    
+    def _create_new_scene(self, directory: str) -> None:
+        """Create a new scene file in the specified directory."""
+        name, ok = QtWidgets.QInputDialog.getText(self, "New Scene", "Enter scene name:")
+        if ok and name.strip():
+            scene_name = name.strip()
+            scene_path = Path(directory) / f"{scene_name}.scene"
+            
+            # Check if file already exists
+            if scene_path.exists():
+                reply = QtWidgets.QMessageBox.question(
+                    self, "File Exists",
+                    f"Scene '{scene_name}.scene' already exists. Overwrite?",
+                    QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No
+                )
+                if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+                    return
+            
+            try:
+                # Create an empty scene and save it
+                from src.editor.scene import EditorScene
+                new_scene = EditorScene()
+                new_scene.editor_label = scene_name
+                new_scene.save(str(scene_path))
+                
+                # Refresh file view
+                self.model().setRootPath(str(self.editor_window.project_root))
+                
+                # Log to console
+                if hasattr(self.editor_window, '_console_widget') and self.editor_window._console_widget:
+                    self.editor_window._console_widget.log(f"Created new scene: {scene_name}.scene", 'INFO')
+            except Exception as e:
+                error_msg = f"Failed to create scene: {e}"
+                if hasattr(self.editor_window, '_console_widget') and self.editor_window._console_widget:
+                    self.editor_window._console_widget.log(error_msg, 'ERROR')
+                    self.editor_window._bottom_tab_widget.setCurrentIndex(1)
+                else:
+                    print(error_msg)
     
     def _create_python_script(self, directory: str) -> None:
         """Create a new Python script file."""
@@ -282,7 +630,6 @@ class FileTreeView(QtWidgets.QTreeView):
             
             script_path = Path(directory) / f"{script_name}.py"
             
-            # Create a basic script template
             template = f'''"""
 {script_name} module.
 """
@@ -305,10 +652,9 @@ class {script_name}Script(Script):
         """Called every frame."""
         pass
 '''
-            
             try:
                 script_path.write_text(template, encoding="utf-8")
-                self.editor_window._file_model.setRootPath(str(self.editor_window.project_root))
+                self.model().setRootPath(str(self.editor_window.project_root))
             except Exception as e:
                 QtWidgets.QMessageBox.critical(self, "Error", f"Failed to create script:\n{e}")
     
@@ -327,7 +673,6 @@ class {script_name}Script(Script):
             
             script_path = Path(directory) / f"{type_name.lower()}.py"
             
-            # Create a ScriptableObject template
             template = f'''"""
 {type_name} - A Scriptable Object type.
 
@@ -358,18 +703,15 @@ class {type_name}(ScriptableObject):
         """
         pass
 '''
-            
             try:
                 script_path.write_text(template, encoding="utf-8")
-                self.editor_window._file_model.setRootPath(str(self.editor_window.project_root))
+                self.model().setRootPath(str(self.editor_window.project_root))
                 
-                # Import the module to register the type
                 import importlib.util
                 import sys
                 
                 spec = importlib.util.spec_from_file_location(
-                    f"{type_name.lower()}_scriptable",
-                    str(script_path)
+                    f"{type_name.lower()}_scriptable", str(script_path)
                 )
                 if spec and spec.loader:
                     module = importlib.util.module_from_spec(spec)
@@ -388,16 +730,12 @@ class {type_name}(ScriptableObject):
         """Add all discovered ScriptableObject types to the menu."""
         from src.engine3d.scriptable_object import ScriptableObject, ScriptableObjectMeta
         
-        # Get all registered types
         types = ScriptableObjectMeta.get_all_types()
         
-        # Filter to show only simple names (not full module paths)
         seen_simple_names = set()
         for type_name, type_info in types.items():
-            # Skip full module paths (they contain dots beyond the class name)
             if '.' in type_name:
                 continue
-            
             if type_name in seen_simple_names:
                 continue
             seen_simple_names.add(type_name)
@@ -407,12 +745,10 @@ class {type_name}(ScriptableObject):
                 lambda checked, t=type_info.type_class, d=directory: self._create_scriptable_object_instance(t, d)
             )
         
-        # If no types found, add a disabled placeholder
         if not seen_simple_names:
             placeholder = menu.addAction("(No types defined)")
             placeholder.setEnabled(False)
         
-        # Also scan for ScriptableObject types in project files
         self._scan_project_for_scriptable_objects(menu, directory)
     
     def _scan_project_for_scriptable_objects(self, menu: QtWidgets.QMenu, directory: str) -> None:
@@ -422,23 +758,17 @@ class {type_name}(ScriptableObject):
         import sys
         import types
         
-        # Find all .py files in the project
         project_root = self.editor_window.project_root
         
         found_types = []
         for py_file in project_root.rglob("*.py"):
-            # Skip hidden directories and __pycache__
             if any(part.startswith('.') or part == '__pycache__' for part in py_file.parts):
                 continue
-            
-            # Skip src directory (engine code)
             if 'src' in py_file.parts:
                 continue
             
             try:
                 content = py_file.read_text(encoding='utf-8')
-                
-                # Look for ScriptableObject subclasses
                 pattern = r'class\s+(\w+)\s*\(\s*ScriptableObject\s*\)'
                 matches = re.findall(pattern, content)
                 
@@ -448,21 +778,16 @@ class {type_name}(ScriptableObject):
             except Exception:
                 continue
         
-        # Add found types to menu
         if found_types:
             menu.addSeparator()
             for file_path, class_name in found_types:
-                # Try to import and get the class
                 try:
-                    # Create a proper module name based on relative path from project root
-                    # This ensures the _type field in .asset files has a proper module path
                     try:
                         relative_path = file_path.relative_to(project_root)
                         module_name = '.'.join(relative_path.with_suffix('').parts)
                     except ValueError:
                         module_name = file_path.stem
                     
-                    # Ensure parent packages exist for dotted module names
                     if "." in module_name:
                         parts = module_name.split(".")
                         for i in range(1, len(parts)):
@@ -472,17 +797,14 @@ class {type_name}(ScriptableObject):
                                 pkg_module.__path__ = [str(project_root / Path(*parts[:i]))]
                                 sys.modules[pkg_name] = pkg_module
                     
-                    # Check if module is already imported
                     if module_name in sys.modules:
                         module = sys.modules[module_name]
-                        # Try to reload to get latest changes
                         try:
                             import importlib
                             importlib.reload(module)
                         except Exception:
                             pass
                     else:
-                        # Import the module
                         spec = importlib.util.spec_from_file_location(module_name, str(file_path))
                         if spec and spec.loader:
                             module = importlib.util.module_from_spec(spec)
@@ -496,17 +818,15 @@ class {type_name}(ScriptableObject):
                             lambda checked, c=so_class, d=directory: self._create_scriptable_object_instance(c, d)
                         )
                 except Exception:
-                    # If import fails, just show the class name
                     action = menu.addAction(f"{class_name} (needs import)")
     
     def _create_scriptable_object_instance(self, so_class, directory: str) -> None:
         """Create a new ScriptableObject instance of the given class."""
         from src.engine3d.scriptable_object import SCRIPTABLE_OBJECT_EXT
         
-        # Ask for instance name
         default_name = f"New{so_class.__name__}"
         name, ok = QtWidgets.QInputDialog.getText(
-            self, f"Create {so_class.__name__}", 
+            self, f"Create {so_class.__name__}",
             f"Enter name for this {so_class.__name__} instance:",
             text=default_name
         )
@@ -515,11 +835,8 @@ class {type_name}(ScriptableObject):
             return
         
         name = name.strip()
-        
-        # Determine save path
         file_path = Path(directory) / f"{name}{SCRIPTABLE_OBJECT_EXT}"
         
-        # Check if file already exists
         if file_path.exists():
             reply = QtWidgets.QMessageBox.question(
                 self, "File Exists",
@@ -530,19 +847,15 @@ class {type_name}(ScriptableObject):
                 return
         
         try:
-            # Create instance
             instance = so_class.create(name)
             instance.save(str(file_path))
             
-            # Refresh file view
-            self.editor_window._file_model.setRootPath(str(self.editor_window.project_root))
+            self.model().setRootPath(str(self.editor_window.project_root))
             
-            # Select the new file
-            new_index = self.editor_window._file_model.index(str(file_path))
+            new_index = self.model().index(str(file_path))
             if new_index.isValid():
                 self.setCurrentIndex(new_index)
             
-            # Refresh the inspector to show the new ScriptableObject in reference fields
             self.editor_window._refresh_scriptable_object_fields()
             
             QtWidgets.QMessageBox.information(
@@ -715,10 +1028,13 @@ class HierarchyTreeWidget(QtWidgets.QTreeWidget):
             event.acceptProposedAction()
             
         except Exception as e:
-            from PySide6 import QtWidgets
-            QtWidgets.QMessageBox.critical(
-                self, "Error", f"Failed to instantiate prefab:\n{e}"
-            )
+            # Log error to console instead of popup
+            error_msg = f"Failed to instantiate prefab: {e}"
+            if hasattr(self.editor_window, '_console_widget') and self.editor_window._console_widget:
+                self.editor_window._console_widget.log(error_msg, 'ERROR')
+                self.editor_window._bottom_tab_widget.setCurrentIndex(1)
+            else:
+                print(error_msg)
             event.ignore()
     
     def _is_descendant(self, potential_ancestor: GameObject, potential_descendant: GameObject) -> bool:
@@ -825,6 +1141,10 @@ class EditorWindow(QtWidgets.QMainWindow):
                 event.ignore()
                 return
             # Discard: just continue to close
+        
+        # Restore stdout/stderr before closing
+        if hasattr(self, '_console_widget') and self._console_widget:
+            self._console_widget.restore_stdout()
         
         if self._window:
             self._window.close()
@@ -1297,10 +1617,19 @@ class {class_name}(Script):
 
         except Exception as e:
             import traceback
-            traceback.print_exc()
-            QtWidgets.QMessageBox.critical(
-                self, "Error", f"Failed to load script:\n{e}"
-            )
+            tb = traceback.format_exc()
+            error_msg = f"Failed to load script {class_name}: {e}"
+            
+            # Log to console instead of popup
+            if hasattr(self, '_console_widget') and self._console_widget:
+                self._console_widget.log(error_msg, 'ERROR')
+                self._console_widget.log(tb, 'ERROR')
+                # Switch to console tab
+                if hasattr(self, '_bottom_tab_widget'):
+                    self._bottom_tab_widget.setCurrentIndex(1)
+            else:
+                print(error_msg)
+                print(tb)
 
     def _add_component_to_selected(self, component) -> None:
         obj = self._selection.game_object
@@ -1479,49 +1808,239 @@ class {class_name}(Script):
         self._viewport.update()
 
     def _setup_files_panel(self) -> None:
-        panel = QtWidgets.QWidget(self)
-        layout = QtWidgets.QVBoxLayout(panel)
-        layout.setContentsMargins(4, 4, 4, 4)
-
-        self._file_model = QtWidgets.QFileSystemModel(panel)
+        """Set up the file browser panel with icon view and console tabs."""
+        # Create tab widget
+        self._bottom_tab_widget = QtWidgets.QTabWidget(self)
+        self._bottom_tab_widget.setTabPosition(QtWidgets.QTabWidget.TabPosition.South)
+        
+        # ===== PROJECT TAB =====
+        project_panel = QtWidgets.QWidget()
+        project_panel.setAcceptDrops(True)  # Accept drops for gameobject -> prefab
+        project_layout = QtWidgets.QVBoxLayout(project_panel)
+        project_layout.setContentsMargins(4, 4, 4, 4)
+        project_layout.setSpacing(4)
+        
+        # Add breadcrumb navigation bar
+        nav_layout = QtWidgets.QHBoxLayout()
+        nav_layout.setSpacing(4)
+        
+        # Up button to navigate to parent (disabled at project root)
+        self._up_button = QtWidgets.QPushButton("↑ Up", project_panel)
+        self._up_button.setFixedWidth(60)
+        self._up_button.setToolTip("Go to parent folder")
+        self._up_button.clicked.connect(self._on_navigate_up)
+        nav_layout.addWidget(self._up_button)
+        
+        # Separator
+        separator = QtWidgets.QLabel("|", project_panel)
+        separator.setStyleSheet("color: #666;")
+        nav_layout.addWidget(separator)
+        
+        # Breadcrumb container widget with horizontal layout
+        self._breadcrumb_widget = QtWidgets.QWidget(project_panel)
+        self._breadcrumb_layout = QtWidgets.QHBoxLayout(self._breadcrumb_widget)
+        self._breadcrumb_layout.setContentsMargins(0, 0, 0, 0)
+        self._breadcrumb_layout.setSpacing(2)
+        self._breadcrumb_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
+        nav_layout.addWidget(self._breadcrumb_widget, 1)
+        
+        project_layout.addLayout(nav_layout)
+        
+        # File system model
+        self._file_model = QtWidgets.QFileSystemModel(project_panel)
         self._file_model.setRootPath(str(self.project_root))
         self._file_model.setFilter(QtCore.QDir.Filter.AllEntries | QtCore.QDir.Filter.NoDotAndDotDot)
-
-        self._file_view = FileTreeView(self, panel)
+        
+        # Icon view for files
+        self._file_view = FileIconView(self, project_panel)
         self._file_view.setModel(self._file_model)
         self._file_view.setRootIndex(self._file_model.index(str(self.project_root)))
-        self._file_view.setColumnWidth(0, 280)
-        self._file_view.setDragEnabled(True)
-        self._file_view.setAcceptDrops(True)
-        self._file_view.doubleClicked.connect(self._on_file_double_clicked)
+        self._file_view.file_double_clicked.connect(self._on_file_double_clicked)
+        self._file_view.path_changed.connect(self._update_path_label)
         self._file_view.selectionModel().selectionChanged.connect(self._on_file_selection_changed)
-        layout.addWidget(self._file_view)
-
-        self._files_dock.setWidget(panel)
-
+        project_layout.addWidget(self._file_view, 1)  # Stretch to fill available space
+        
+        # Forward drops to file view for gameobject -> prefab creation
+        project_panel.dragEnterEvent = lambda e: self._file_view.dragEnterEvent(e)
+        project_panel.dragMoveEvent = lambda e: self._file_view.dragMoveEvent(e)
+        project_panel.dropEvent = lambda e: self._file_view.dropEvent(e)
+        
+        self._bottom_tab_widget.addTab(project_panel, "Project")
+        
+        # ===== CONSOLE TAB =====
+        self._console_widget = ConsoleWidget()
+        self._bottom_tab_widget.addTab(self._console_widget, "Console")
+        
+        # Set the tab widget as the dock widget content
+        self._files_dock.setWidget(self._bottom_tab_widget)
+        
         # Connect viewport drop signal
         self._viewport.file_dropped.connect(self._on_file_dropped)
+        
+        # Update the path label initially
+        self._update_path_label()
 
-    def _on_file_double_clicked(self, index: QtCore.QModelIndex) -> None:
-        path = self._file_model.filePath(index)
-        self._add_3d_object_from_path(path)
+    def _update_path_label(self, path_str: str = None) -> None:
+        """Update the breadcrumb buttons to show current location relative to project root."""
+        from PySide6 import QtWidgets
+        
+        current = self._file_view.get_current_path()
+        
+        # Clear existing breadcrumbs
+        while self._breadcrumb_layout.count():
+            item = self._breadcrumb_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # Build breadcrumb path
+        try:
+            relative = current.relative_to(self.project_root)
+            parts = [] if str(relative) == "." else list(relative.parts)
+        except ValueError:
+            parts = []
+        
+        # Create "root" button
+        root_btn = QtWidgets.QPushButton("📁 root", self._breadcrumb_widget)
+        root_btn.setFlat(True)
+        root_btn.setStyleSheet("QPushButton { padding: 2px 8px; } QPushButton:hover { background: #444; }")
+        root_btn.setToolTip("Go to project root")
+        root_btn.clicked.connect(lambda: self._navigate_to_path(self.project_root))
+        self._breadcrumb_layout.addWidget(root_btn)
+        
+        # Build cumulative path for each part
+        cumulative_path = Path(self.project_root)
+        
+        for i, part in enumerate(parts):
+            cumulative_path = cumulative_path / part
+            
+            # Add separator arrow
+            arrow = QtWidgets.QLabel("▶", self._breadcrumb_widget)
+            arrow.setStyleSheet("color: #666; font-size: 10px;")
+            self._breadcrumb_layout.addWidget(arrow)
+            
+            # Create button for this folder
+            btn = QtWidgets.QPushButton(part, self._breadcrumb_widget)
+            btn.setFlat(True)
+            btn.setStyleSheet("QPushButton { padding: 2px 8px; } QPushButton:hover { background: #444; }")
+            btn.setToolTip(f"Go to {part}")
+            
+            # Capture the path at this point for the lambda
+            target_path = Path(cumulative_path)
+            btn.clicked.connect(lambda checked, p=target_path: self._navigate_to_path(p))
+            
+            self._breadcrumb_layout.addWidget(btn)
+        
+        # Add stretch to keep breadcrumbs left-aligned
+        self._breadcrumb_layout.addStretch(1)
+        
+        # Update up button state
+        is_at_root = current.resolve() == self.project_root.resolve()
+        self._up_button.setEnabled(not is_at_root)
+    
+    def _navigate_to_path(self, path: Path) -> None:
+        """Navigate to a specific path in the file view."""
+        self._file_view.set_current_path(path)
 
-    def _on_file_dropped(self, path: str) -> None:
+    def _on_navigate_up(self) -> None:
+        """Navigate to parent directory."""
+        current = self._file_view.get_current_path()
+        parent = current.parent
+        project_root = self.project_root.resolve()
+        
+        # Only navigate if parent is still within project root
+        if str(parent.resolve()).startswith(str(project_root)):
+            self._file_view.set_current_path(parent)
+            self._update_path_label()
+
+    def _on_file_double_clicked(self, path: str) -> None:
+        """Handle file double click from icon view."""
+        ext = Path(path).suffix.lower()
+        
+        # Handle scene files - load the scene
+        if ext == '.scene':
+            self._load_scene_with_check(Path(path))
+            return
+        
+        # For other files, add to scene as 3D object
+        # Double click uses center position (0.5, 0.5)
+        self._add_3d_object_from_path(path, 0.5, 0.5)
+    
+    def _load_scene_with_check(self, path: Path) -> None:
+        """Load a scene, prompting to save if there are unsaved changes."""
+        # Check for unsaved changes
+        if self._scene_dirty:
+            reply = QtWidgets.QMessageBox.question(
+                self,
+                "Unsaved Changes",
+                f"The scene '{self._scene_name}' has unsaved changes.\n\n"
+                "Do you want to save before switching to another scene?",
+                QtWidgets.QMessageBox.StandardButton.Save |
+                QtWidgets.QMessageBox.StandardButton.Discard |
+                QtWidgets.QMessageBox.StandardButton.Cancel
+            )
+            
+            if reply == QtWidgets.QMessageBox.StandardButton.Save:
+                self._save_scene()
+                # If save failed, don't switch scenes
+                if self._scene_dirty:
+                    return
+            elif reply == QtWidgets.QMessageBox.StandardButton.Cancel:
+                return
+            # Discard: continue to load new scene
+        
+        # Load the new scene
+        self._load_scene(path)
+
+    def _on_file_dropped(self, path: str, norm_x: float = 0.5, norm_y: float = 0.5) -> None:
+        # Handle prefab drag from file system
+        if path.startswith("prefab:"):
+            prefab_path = path.split(":", 1)[1]
+            self._instantiate_prefab_from_file(prefab_path, norm_x, norm_y)
+            return
+        
+        # Handle gameobject drag (from hierarchy to create prefab - handled by file view)
+        if path.startswith("gameobject:"):
+            # This should be handled by the file view dropEvent
+            return
+        
         if not path:
-            # Drop from tree view
+            # Drop from file view - get selected file
             index = self._file_view.currentIndex()
             if index.isValid():
                 path = self._file_model.filePath(index)
         
         if path:
-            self._add_3d_object_from_path(path)
+            self._add_3d_object_from_path(path, norm_x, norm_y)
 
-    def _add_3d_object_from_path(self, path: str) -> None:
+    def _get_drop_world_position(self, norm_x: float, norm_y: float) -> tuple:
+        """Convert normalized screen coordinates to world position.
+        
+        Uses a raycast from camera through the drop point to find where to place the object.
+        If no intersection found, places at a fixed distance in front of camera.
+        """
+        import numpy as np
+        from src.engine3d.camera import Camera3D
+        
+        # Get camera position and target
+        cam_pos = np.array(self._camera_control['target'], dtype=np.float32)
+        
+        # For now, place at camera target with some offset based on drop position
+        # This creates a simple placement effect where dropping in center puts it at target,
+        # and dropping at edges offsets it
+        offset_x = (norm_x - 0.5) * 10.0  # -5 to +5 range
+        offset_y = -(norm_y - 0.5) * 10.0  # -5 to +5 range (inverted Y)
+        
+        # Position at camera target with offset
+        world_pos = cam_pos + np.array([offset_x, offset_y, 0], dtype=np.float32)
+        
+        return tuple(world_pos)
+
+    def _add_3d_object_from_path(self, path: str, norm_x: float = 0.5, norm_y: float = 0.5) -> None:
         ext = Path(path).suffix.lower()
         
         # Handle .prefab files
         if ext == '.prefab':
-            self._instantiate_prefab_from_file(path)
+            self._instantiate_prefab_from_file(path, norm_x, norm_y)
             return
         
         # Common 3D file extensions supported by trimesh
@@ -1532,19 +2051,33 @@ class {class_name}(Script):
                 go = GameObject(Path(path).stem)
                 go.add_component(obj3d)
                 
-                # Position in front of camera (at target)
-                go.transform.position = tuple(self._camera_control['target'])
+                # Position at drop location (converted from screen to world)
+                drop_pos = self._get_drop_world_position(norm_x, norm_y)
+                go.transform.position = drop_pos
                 
                 self._scene.add_object(go)
                 self._refresh_hierarchy()
                 self._select_object(go)
                 self._viewport.update()
                 self._viewport.doneCurrent()
+                
+                # Log success to console
+                if hasattr(self, '_console_widget') and self._console_widget:
+                    self._console_widget.log(f"Created GameObject from {Path(path).name} at position {drop_pos}", 'INFO')
+                    
             except Exception as e:
-                QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load 3D object:\n{e}")
+                # Log error to console instead of popup
+                error_msg = f"Failed to load 3D object {Path(path).name}: {e}"
+                if hasattr(self, '_console_widget') and self._console_widget:
+                    self._console_widget.log(error_msg, 'ERROR')
+                    # Switch to console tab
+                    if hasattr(self, '_bottom_tab_widget'):
+                        self._bottom_tab_widget.setCurrentIndex(1)
+                else:
+                    print(error_msg)
     
-    def _instantiate_prefab_from_file(self, path: str) -> None:
-        """Instantiate a prefab from a file path."""
+    def _instantiate_prefab_from_file(self, path: str, norm_x: float = 0.5, norm_y: float = 0.5) -> None:
+        """Instantiate a prefab from a file path at the drop position."""
         from src.engine3d.gameobject import Prefab
         
         try:
@@ -1553,10 +2086,13 @@ class {class_name}(Script):
             # Load the prefab
             prefab = Prefab.load(path)
             
-            # Instantiate
+            # Get drop position in world coordinates
+            drop_pos = self._get_drop_world_position(norm_x, norm_y)
+            
+            # Instantiate at drop position
             instance = prefab.instantiate(
                 scene=self._scene,
-                position=tuple(self._camera_control['target'])
+                position=drop_pos
             )
             
             # Refresh hierarchy
@@ -1568,8 +2104,19 @@ class {class_name}(Script):
             # Mark scene as dirty
             self._mark_scene_dirty()
             
+            # Log success to console
+            if hasattr(self, '_console_widget') and self._console_widget:
+                self._console_widget.log(f"Instantiated prefab {Path(path).name} at position {drop_pos}", 'INFO')
+            
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to instantiate prefab:\n{e}")
+            # Log error to console instead of popup
+            error_msg = f"Failed to instantiate prefab {Path(path).name}: {e}"
+            if hasattr(self, '_console_widget') and self._console_widget:
+                self._console_widget.log(error_msg, 'ERROR')
+                if hasattr(self, '_bottom_tab_widget'):
+                    self._bottom_tab_widget.setCurrentIndex(1)
+            else:
+                print(error_msg)
     
     def _on_file_selection_changed(self) -> None:
         """Handle file selection change in the files panel."""
@@ -1613,7 +2160,11 @@ class {class_name}(Script):
             self._current_prefab = Prefab.load(path)
             
             if self._current_prefab._data is None:
-                QtWidgets.QMessageBox.warning(self, "Warning", "Failed to load prefab data.")
+                # Log warning to console
+                if hasattr(self, '_console_widget') and self._console_widget:
+                    self._console_widget.log("Warning: Failed to load prefab data", 'WARNING')
+                else:
+                    print("Warning: Failed to load prefab data")
                 return
             
             # Deselect any scene object
@@ -1626,7 +2177,13 @@ class {class_name}(Script):
             self._update_prefab_inspector()
             
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load prefab:\n{e}")
+            # Log error to console
+            error_msg = f"Failed to load prefab: {e}"
+            if hasattr(self, '_console_widget') and self._console_widget:
+                self._console_widget.log(error_msg, 'ERROR')
+                self._bottom_tab_widget.setCurrentIndex(1)
+            else:
+                print(error_msg)
     
     def _update_prefab_inspector(self) -> None:
         """Update the inspector panel to show the current prefab's data."""
@@ -1830,10 +2387,19 @@ class {class_name}(Script):
             
         except Exception as e:
             import traceback
-            traceback.print_exc()
-            QtWidgets.QMessageBox.critical(
-                self, "Error", f"Failed to load script:\n{e}"
-            )
+            tb = traceback.format_exc()
+            error_msg = f"Failed to load script {class_name} for prefab: {e}"
+            
+            # Log to console instead of popup
+            if hasattr(self, '_console_widget') and self._console_widget:
+                self._console_widget.log(error_msg, 'ERROR')
+                self._console_widget.log(tb, 'ERROR')
+                # Switch to console tab
+                if hasattr(self, '_bottom_tab_widget'):
+                    self._bottom_tab_widget.setCurrentIndex(1)
+            else:
+                print(error_msg)
+                print(tb)
     
     def _add_component_to_prefab(self, component) -> None:
         """Add a component to the prefab being edited."""
@@ -1965,8 +2531,18 @@ class {class_name}(Script):
             
         except Exception as e:
             import traceback
-            traceback.print_exc()
-            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load Scriptable Object:\n{e}")
+            tb = traceback.format_exc()
+            error_msg = f"Failed to load Scriptable Object: {e}"
+            
+            # Log to console instead of popup
+            if hasattr(self, '_console_widget') and self._console_widget:
+                self._console_widget.log(error_msg, 'ERROR')
+                self._console_widget.log(tb, 'ERROR')
+                if hasattr(self, '_bottom_tab_widget'):
+                    self._bottom_tab_widget.setCurrentIndex(1)
+            else:
+                print(error_msg)
+                print(tb)
     
     def _update_scriptable_object_inspector(self) -> None:
         """Update the inspector panel to show the current ScriptableObject."""
@@ -2371,25 +2947,34 @@ class {class_name}(Script):
             self._pause_action.setText("Pause")
             
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to stop play mode:\n{e}")
+            # Log error to console instead of popup
+            error_msg = f"Failed to stop play mode: {e}"
+            if hasattr(self, '_console_widget') and self._console_widget:
+                self._console_widget.log(error_msg, 'ERROR')
+                self._bottom_tab_widget.setCurrentIndex(1)
+            else:
+                print(error_msg)
 
     def _on_play_mode_error(self, error_msg: str, traceback_text: str) -> None:
         """
         Handle an error that occurred during play mode.
-        Stops play mode and shows an error dialog.
+        Stops play mode and logs error to console.
         """
         # Stop play mode first
         self._on_stop_clicked()
         
-        # Show error dialog with details
-        msg_box = QtWidgets.QMessageBox(self)
-        msg_box.setWindowTitle("Play Mode Error")
-        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Critical)
-        msg_box.setText("An error occurred during play mode.")
-        msg_box.setInformativeText(f"Error: {error_msg}\n\nPlay mode has been stopped.")
-        msg_box.setDetailedText(traceback_text)
-        msg_box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
-        msg_box.exec()
+        # Log error to console
+        if hasattr(self, '_console_widget') and self._console_widget:
+            self._console_widget.log(f"Play Mode Error: {error_msg}", 'ERROR')
+            self._console_widget.log(f"Traceback:\n{traceback_text}", 'ERROR')
+        else:
+            # Fallback to print if console not available
+            print(f"Play Mode Error: {error_msg}")
+            print(f"Traceback:\n{traceback_text}")
+        
+        # Switch to console tab to show the error
+        if hasattr(self, '_bottom_tab_widget'):
+            self._bottom_tab_widget.setCurrentIndex(1)  # Console tab index
 
     def _setup_timer(self) -> None:
         self._timer = QtCore.QTimer(self)
@@ -2611,10 +3196,23 @@ class {class_name}(Script):
             
             self._update_scene_label()
             
+            # Log scene load to console
+            if hasattr(self, '_console_widget') and self._console_widget:
+                self._console_widget.log(f"Loaded scene: {path.stem}", 'INFO')
+            
         except Exception as e:
             import traceback
-            traceback.print_exc()
-            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load scene:\n{e}")
+            tb = traceback.format_exc()
+            error_msg = f"Failed to load scene: {e}"
+            
+            # Log to console instead of popup
+            if hasattr(self, '_console_widget') and self._console_widget:
+                self._console_widget.log(error_msg, 'ERROR')
+                self._console_widget.log(tb, 'ERROR')
+                self._bottom_tab_widget.setCurrentIndex(1)
+            else:
+                print(error_msg)
+                print(tb)
     
     def _restore_prefab_connections(self) -> None:
         """Restore prefab connections for all objects in the scene."""

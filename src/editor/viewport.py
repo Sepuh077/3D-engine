@@ -3,7 +3,7 @@ from PySide6 import QtCore, QtGui, QtWidgets, QtOpenGLWidgets
 
 class ViewportWidget(QtOpenGLWidgets.QOpenGLWidget):
     resized = QtCore.Signal(int, int)
-    file_dropped = QtCore.Signal(str)
+    file_dropped = QtCore.Signal(str, float, float)  # (path, x, y) - x,y are normalized 0-1
     
     # Mouse events for camera control
     mouse_pressed = QtCore.Signal(QtGui.QMouseEvent)
@@ -30,22 +30,34 @@ class ViewportWidget(QtOpenGLWidgets.QOpenGLWidget):
         self.render_callback = None
 
     def dragEnterEvent(self, event: QtGui.QDragEnterEvent) -> None:
-        if event.mimeData().hasUrls() or event.mimeData().hasFormat("application/x-qabstractitemmodeldatalist"):
+        # Accept URLs (file drops from outside), text (prefab/gameobject drags), or internal model data
+        if (event.mimeData().hasUrls() or 
+            event.mimeData().hasText() or 
+            event.mimeData().hasFormat("application/x-qabstractitemmodeldatalist")):
             event.acceptProposedAction()
 
     def dropEvent(self, event: QtGui.QDropEvent) -> None:
+        # Get drop position normalized to widget (0-1 range)
+        pos = event.position()
+        norm_x = pos.x() / self.width() if self.width() > 0 else 0.5
+        norm_y = pos.y() / self.height() if self.height() > 0 else 0.5
+        
         if event.mimeData().hasUrls():
+            # External file drop (e.g., from OS file manager)
             for url in event.mimeData().urls():
                 path = url.toLocalFile()
                 if path:
-                    self.file_dropped.emit(path)
+                    self.file_dropped.emit(path, norm_x, norm_y)
+        elif event.mimeData().hasText():
+            # Handle prefab or gameobject drag
+            text = event.mimeData().text()
+            if text.startswith("prefab:") or text.startswith("gameobject:"):
+                self.file_dropped.emit(text, norm_x, norm_y)
+            else:
+                self.file_dropped.emit("", norm_x, norm_y)
         elif event.mimeData().hasFormat("application/x-qabstractitemmodeldatalist"):
-            # This handles drag from the internal QTreeView
-            # But it's easier to just use the selection from the tree in the window
-            # For now, we'll let the window handle the drop if it's from the tree
-            # or just emit a special signal.
-            # Actually, the window can just check the tree selection when a drop happens.
-            self.file_dropped.emit("") # Signal that something was dropped from the tree
+            # Internal model data (from tree views)
+            self.file_dropped.emit("", norm_x, norm_y)
         
         event.acceptProposedAction()
 

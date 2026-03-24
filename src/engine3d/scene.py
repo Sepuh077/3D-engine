@@ -2,8 +2,11 @@
 Scene3D - A scene that can be shown in a Window3D.
 Similar to arcade.View, but renamed for clarity.
 """
-from typing import Dict, List, Optional, Tuple, Union, TYPE_CHECKING
-import json, pygame
+from typing import Dict, List, Optional, Tuple, Union, TYPE_CHECKING, Callable
+import json
+import pygame
+import threading
+import time
 
 from .gameobject import GameObject
 from .object3d import Object3D
@@ -483,3 +486,207 @@ class Scene3D:
         """Draw image (path or Surface; delegates to window)."""
         if self.window:
             self.window.draw_image(image, x, y, scale, alpha)
+
+
+class SceneManager:
+    """
+    Manages scene loading with both synchronous and asynchronous options.
+    
+    Similar to Unity's SceneManager, providing progress callbacks for async loading.
+    """
+    
+    # Callback type: progress (0.0 to 1.0)
+    ProgressCallback = Callable[[float], None]
+    
+    # Current loading operation
+    _current_load: Optional[threading.Thread] = None
+    _loading_progress: float = 0.0
+    _loaded_scene: Optional[Scene3D] = None
+    _loading_error: Optional[Exception] = None
+    
+    @classmethod
+    def load_scene(cls, path: str) -> Scene3D:
+        """
+        Synchronously load a scene from file.
+        
+        This will block until the scene is fully loaded. For large scenes,
+        this may cause frame drops. Use load_scene_async for non-blocking loads.
+        
+        Args:
+            path: Path to the .scene file
+            
+        Returns:
+            The loaded Scene3D instance
+            
+        Example:
+            scene = SceneManager.load_scene("Scenes/level1.scene")
+            window.show_scene(scene)
+        """
+        return Scene3D.load(path)
+    
+    @classmethod
+    def load_scene_async(cls, path: str, 
+                         on_progress: Optional[ProgressCallback] = None,
+                         on_complete: Optional[Callable[[Scene3D], None]] = None,
+                         on_error: Optional[Callable[[Exception], None]] = None) -> None:
+        """
+        Asynchronously load a scene from file with progress callbacks.
+        
+        The scene loads in a background thread, calling on_progress with values
+        from 0.0 to 1.0. Once complete, on_complete is called with the loaded scene.
+        
+        Args:
+            path: Path to the .scene file
+            on_progress: Callback(progress: float) called during loading (0.0 to 1.0)
+            on_complete: Callback(scene: Scene3D) called when loading completes
+            on_error: Callback(error: Exception) called if loading fails
+            
+        Example:
+            def on_progress(p):
+                print(f"Loading: {p*100:.0f}%")
+                loading_bar.value = p
+            
+            def on_complete(scene):
+                window.show_scene(scene)
+                loading_bar.visible = False
+            
+            SceneManager.load_scene_async(
+                "Scenes/level1.scene",
+                on_progress=on_progress,
+                on_complete=on_complete
+            )
+        """
+        # Reset state
+        cls._loading_progress = 0.0
+        cls._loaded_scene = None
+        cls._loading_error = None
+        
+        def load_in_background():
+            try:
+                # Simulate progress steps
+                total_steps = 5
+                
+                # Step 1: Read file (10%)
+                cls._loading_progress = 0.1
+                if on_progress:
+                    on_progress(cls._loading_progress)
+                
+                with open(path, "r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+                
+                # Step 2: Create scene object (30%)
+                cls._loading_progress = 0.3
+                if on_progress:
+                    on_progress(cls._loading_progress)
+                time.sleep(0.01)  # Small delay to allow UI update
+                
+                scene = Scene3D.__new__(Scene3D)
+                scene.window = None
+                scene.objects = []
+                scene._cameras = []
+                scene._main_camera = None
+                scene._setup_done = False
+                scene.canvas = UIManager(scene)
+                
+                # Step 3: Setup camera (50%)
+                cls._loading_progress = 0.5
+                if on_progress:
+                    on_progress(cls._loading_progress)
+                time.sleep(0.01)
+                
+                camera_data = data.get("camera", {})
+                if camera_data:
+                    cam_obj = GameObject("Main Camera")
+                    camera = Camera3D()
+                    cam_obj.add_component(camera)
+                    cam_obj.transform.position = camera_data.get("position", (0, 5, 10))
+                    cam_obj.transform.look_at(camera_data.get("target", (0, 0, 0)))
+                    camera.fov = camera_data.get("fov", 60)
+                    camera.near = camera_data.get("near", 0.1)
+                    camera.far = camera_data.get("far", 1000)
+                    scene.add_object(cam_obj)
+                    scene._main_camera = camera
+                
+                # Step 4: Load objects (70%)
+                cls._loading_progress = 0.7
+                if on_progress:
+                    on_progress(cls._loading_progress)
+                time.sleep(0.01)
+                
+                objects_data = data.get("objects", [])
+                total_objects = len(objects_data)
+                
+                for i, obj_data in enumerate(objects_data):
+                    obj = GameObject._from_prefab_dict(obj_data)
+                    scene.objects.append(obj)
+                    
+                    # Update progress within object loading (70% to 90%)
+                    obj_progress = 0.7 + (0.2 * (i + 1) / total_objects) if total_objects > 0 else 0.9
+                    cls._loading_progress = obj_progress
+                    if on_progress:
+                        on_progress(cls._loading_progress)
+                
+                # Step 5: Resolve references and finalize (100%)
+                cls._loading_progress = 0.95
+                if on_progress:
+                    on_progress(cls._loading_progress)
+                
+                # Build registry and resolve references
+                go_registry = {obj._id: obj for obj in scene.objects}
+                for obj in scene.objects:
+                    Scene3D._resolve_component_references(obj, go_registry)
+                
+                # Register cameras
+                for obj in scene.objects:
+                    for cam in obj.get_components(Camera3D):
+                        if cam not in scene._cameras:
+                            scene._cameras.append(cam)
+                            if scene._main_camera is None:
+                                scene._main_camera = cam
+                
+                cls._loading_progress = 1.0
+                cls._loaded_scene = scene
+                
+                if on_progress:
+                    on_progress(1.0)
+                
+                if on_complete:
+                    on_complete(scene)
+                    
+            except Exception as e:
+                cls._loading_error = e
+                if on_error:
+                    on_error(e)
+        
+        # Start loading in background thread
+        cls._current_load = threading.Thread(target=load_in_background, daemon=True)
+        cls._current_load.start()
+    
+    @classmethod
+    def get_loading_progress(cls) -> float:
+        """
+        Get the current loading progress (0.0 to 1.0).
+        
+        Returns 1.0 if no loading is in progress.
+        """
+        if cls._current_load is None or not cls._current_load.is_alive():
+            return 1.0 if cls._loaded_scene is not None else 0.0
+        return cls._loading_progress
+    
+    @classmethod
+    def is_loading(cls) -> bool:
+        """Check if a scene is currently being loaded."""
+        return cls._current_load is not None and cls._current_load.is_alive()
+    
+    @classmethod
+    def get_loaded_scene(cls) -> Optional[Scene3D]:
+        """
+        Get the scene that was loaded by the most recent async operation.
+        Returns None if no scene has been loaded.
+        """
+        return cls._loaded_scene
+    
+    @classmethod
+    def get_loading_error(cls) -> Optional[Exception]:
+        """Get any error that occurred during the last async load operation."""
+        return cls._loading_error
