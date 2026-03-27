@@ -287,8 +287,21 @@ class ParticleSystem(Component):
     def on_attach(self) -> None:
         from .drawing import get_window
         window = get_window()
-        self._container = window.current_scene if window and window.current_scene else window
-        self._build_pool()
+        # Get the container (scene) - prefer the game object's scene if available
+        if self.game_object and hasattr(self.game_object, '_scene') and self.game_object._scene:
+            self._container = self.game_object._scene
+        elif window and window.current_scene:
+            self._container = window.current_scene
+        else:
+            self._container = window
+        
+        # Build pool only if container is available; otherwise defer until update()
+        if self._container is not None:
+            try:
+                self._build_pool()
+            except RuntimeError:
+                pass  # Container not fully ready, will retry in update()
+        
         if self.play_on_awake:
             self.play()
         # Also auto-play in editor if play_in_editor is set (for testing)
@@ -398,6 +411,14 @@ class ParticleSystem(Component):
 
     def update(self) -> None:
         delta_time = Time.delta_time
+        
+        # Ensure pool is built (may have been deferred if container wasn't ready at on_attach)
+        if not self._particles and self._container is not None:
+            try:
+                self._build_pool()
+            except RuntimeError:
+                pass  # Container not ready yet
+        
         if self._playing:
             if self.play_duration > 0:
                 self._elapsed += delta_time

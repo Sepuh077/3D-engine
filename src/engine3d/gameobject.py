@@ -330,6 +330,13 @@ class GameObject:
                 "_rng",
             })
 
+        is_transform = module_name == "src.engine3d.transform" and class_name == "Transform"
+        if is_transform:
+            skip_keys = set(skip_keys)
+            skip_keys.update({
+                "_children",  # Rebuilt automatically when _parent is set on children
+            })
+
         # Get the game object ID for component references
         game_object_id = component.game_object._id if component.game_object else None
 

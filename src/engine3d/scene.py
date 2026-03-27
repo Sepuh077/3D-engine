@@ -144,6 +144,9 @@ class Scene3D:
             
         self.objects.append(go)
         
+        # Set scene reference on the GameObject for components like ParticleSystem
+        go._scene = self
+        
         # Initialize GPU if window is available
         if self.window and self.window._ctx:
             obj3d_comp = go.get_component(Object3D)
@@ -213,6 +216,10 @@ class Scene3D:
                     self._main_camera = self._cameras[0] if self._cameras else None
 
         self.objects.remove(obj)
+        
+        # Clear scene reference
+        if hasattr(obj, '_scene'):
+            obj._scene = None
     
     def clear_objects(self):
         """Remove all objects from scene."""
@@ -223,6 +230,8 @@ class Scene3D:
             else:
                 if obj.get_component(Object3D):
                     obj.get_component(Object3D)._release_gpu()
+            if hasattr(obj, '_scene'):
+                obj._scene = None
         self.objects.clear()
         self._cameras.clear()
         self._main_camera = None

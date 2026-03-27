@@ -3228,6 +3228,15 @@ class {class_name}(Script):
             for obj in self._scene.objects:
                 obj.start_scripts()
             
+            # Restart all particle systems from scratch for play mode
+            from src.engine3d.particle import ParticleSystem
+            for obj in self._scene.objects:
+                for comp in obj.components:
+                    if isinstance(comp, ParticleSystem):
+                        # Stop and clear any existing particles, then restart fresh
+                        comp.stop(clear_particles=True)
+                        comp.play()
+            
             self._playing = True
             self._paused = False
             
@@ -4796,39 +4805,80 @@ class {class_name}(Script):
         # Get values, handling multi-value "-" state
         # _multi_value = True means field shows "-" (values differ), user hasn't explicitly changed
         # When user interacts (types, clicks arrows), valueChanged fires and we apply
+        # Only apply values that were actually changed (not still at minimum showing "-")
         pos = []
+        pos_changed = []  # Track which components were changed
         for i, f in enumerate(self._pos_fields):
             if getattr(f, '_multi_value', False):
-                # Multi-value state, but user is NOW changing - apply new value
-                pos.append(f.value())
-                f._multi_value = False  # Clear flag
-                f.setSpecialValueText("")  # Clear "-" display
+                # Multi-value state - check if user actually changed it
+                if f.value() != f.minimum():
+                    # User changed it - apply new value
+                    pos.append(f.value())
+                    pos_changed.append(True)
+                    f._multi_value = False  # Clear flag
+                    f.setSpecialValueText("")  # Clear "-" display
+                else:
+                    # Still showing "-" - don't change this component
+                    pos.append(None)  # Placeholder, will use per-object value
+                    pos_changed.append(False)
             else:
                 pos.append(f.value())
+                pos_changed.append(True)
         
         rot = []
+        rot_changed = []
         for i, f in enumerate(self._rot_fields):
             if getattr(f, '_multi_value', False):
-                rot.append(f.value())
-                f._multi_value = False
-                f.setSpecialValueText("")
+                if f.value() != f.minimum():
+                    rot.append(f.value())
+                    rot_changed.append(True)
+                    f._multi_value = False
+                    f.setSpecialValueText("")
+                else:
+                    rot.append(None)
+                    rot_changed.append(False)
             else:
                 rot.append(f.value())
+                rot_changed.append(True)
         
         scale = []
+        scale_changed = []
         for i, f in enumerate(self._scale_fields):
             if getattr(f, '_multi_value', False):
-                scale.append(f.value())
-                f._multi_value = False
-                f.setSpecialValueText("")
+                if f.value() != f.minimum():
+                    scale.append(f.value())
+                    scale_changed.append(True)
+                    f._multi_value = False
+                    f.setSpecialValueText("")
+                else:
+                    scale.append(None)
+                    scale_changed.append(False)
             else:
                 scale.append(f.value())
+                scale_changed.append(True)
 
-        # Apply to ALL selected objects
+        # Apply to ALL selected objects, preserving unchanged multi-value components
         for obj in objects:
-            obj.transform.position = pos
-            obj.transform.rotation = rot
-            obj.transform.scale_xyz = scale
+            # Position: only update components that changed
+            new_pos = list(obj.transform.position)
+            for i, (val, changed) in enumerate(zip(pos, pos_changed)):
+                if changed and val is not None:
+                    new_pos[i] = val
+            obj.transform.position = tuple(new_pos)
+            
+            # Rotation: only update components that changed
+            new_rot = list(obj.transform.rotation)
+            for i, (val, changed) in enumerate(zip(rot, rot_changed)):
+                if changed and val is not None:
+                    new_rot[i] = val
+            obj.transform.rotation = tuple(new_rot)
+            
+            # Scale: only update components that changed
+            new_scale = list(obj.transform.scale_xyz)
+            for i, (val, changed) in enumerate(zip(scale, scale_changed)):
+                if changed and val is not None:
+                    new_scale[i] = val
+            obj.transform.scale_xyz = tuple(new_scale)
         
         if self._window:
             self._window.editor_selected_object = objects[0] if objects else None
@@ -5022,55 +5072,48 @@ class {class_name}(Script):
         for i, f in enumerate(self._pos_fields):
             if not f.hasFocus():
                 values = [p[i] for p in positions]
+                f._multi_value = not all_same(values)
+                f.blockSignals(True)
                 if all_same(values):
-                    f.blockSignals(True)
                     f.setSpecialValueText("")
-                    f._multi_value = False
                     f.setValue(values[0])
-                    f.blockSignals(False)
                 else:
-                    f.blockSignals(True)
+                    # Show "-" for differing values
                     f.setSpecialValueText("-")
-                    f._multi_value = True
-                    # Show first object's value but mark as multi
-                    f.setValue(values[0] if values else 0)
-                    f.blockSignals(False)
+                    f.setValue(f.minimum())
+                f.blockSignals(False)
         
         # Rotation
         rotations = [obj.transform.rotation for obj in objects]
         for i, f in enumerate(self._rot_fields):
             if not f.hasFocus():
                 values = [r[i] for r in rotations]
+                f._multi_value = not all_same(values)
+                f.blockSignals(True)
                 if all_same(values):
-                    f.blockSignals(True)
                     f.setSpecialValueText("")
-                    f._multi_value = False
                     f.setValue(values[0])
-                    f.blockSignals(False)
                 else:
-                    f.blockSignals(True)
+                    # Show "-" for differing values
                     f.setSpecialValueText("-")
-                    f._multi_value = True
-                    f.setValue(values[0] if values else 0)
-                    f.blockSignals(False)
+                    f.setValue(f.minimum())
+                f.blockSignals(False)
         
         # Scale
         scales = [obj.transform.scale_xyz for obj in objects]
         for i, f in enumerate(self._scale_fields):
             if not f.hasFocus():
                 values = [s[i] for s in scales]
+                f._multi_value = not all_same(values)
+                f.blockSignals(True)
                 if all_same(values):
-                    f.blockSignals(True)
                     f.setSpecialValueText("")
-                    f._multi_value = False
                     f.setValue(values[0])
-                    f.blockSignals(False)
                 else:
-                    f.blockSignals(True)
+                    # Show "-" for differing values
                     f.setSpecialValueText("-")
-                    f._multi_value = True
-                    f.setValue(values[0] if values else 0)
-                    f.blockSignals(False)
+                    f.setValue(f.minimum())
+                f.blockSignals(False)
 
         # ===== Components =====
         if force_components or self._components_dirty:
@@ -5187,33 +5230,55 @@ class {class_name}(Script):
                     checkbox.setCheckState(QtCore.Qt.CheckState.PartiallyChecked)
                 checkbox._field_name = field_name
                 checkbox._field_type = field_type
-                checkbox.stateChanged.connect(lambda state, fn=field_name, ft=field_type: 
-                    self._on_multi_field_changed(fn, ft, state))
+                checkbox._component_class_name = type(comp).__name__
+                checkbox.stateChanged.connect(lambda state, fn=field_name, ft=field_type, s=checkbox: 
+                    self._on_multi_field_changed(fn, ft, state, getattr(s, '_component_class_name', None)))
                 form.addRow(field_name, checkbox)
             elif field_type == InspectorFieldType.FLOAT:
                 spin = NoWheelSpinBox()
                 spin.setRange(-10000, 10000)
                 spin.setDecimals(3)
-                if all_same and values:
-                    spin.setValue(values[0])
-                else:
-                    spin.setSpecialValueText("-")
                 spin._field_name = field_name
                 spin._field_type = field_type
-                spin.valueChanged.connect(lambda v, fn=field_name, ft=field_type: 
-                    self._on_multi_field_changed(fn, ft, v))
+                spin._component_class_name = type(comp).__name__  # Store component type for matching
+                spin._multi_value = not (all_same and values)
+                spin.blockSignals(True)
+                if all_same and values:
+                    spin.setSpecialValueText("")
+                    spin.setValue(values[0])
+                else:
+                    # Show "-" for differing values - set to minimum so special text displays
+                    spin.setSpecialValueText("-")
+                    spin.setValue(spin.minimum())
+                spin.blockSignals(False)
+                def make_multi_spinbox_handler(fn, ft, s):
+                    def handler(v):
+                        if getattr(s, '_multi_value', False) and v == s.minimum():
+                            return  # Still showing "-", don't apply
+                        # User changed value - clear multi-value state and apply
+                        s._multi_value = False
+                        s.setSpecialValueText("")
+                        self._on_multi_field_changed(fn, ft, v, getattr(s, '_component_class_name', None))
+                    return handler
+                spin.valueChanged.connect(make_multi_spinbox_handler(field_name, field_type, spin))
                 form.addRow(field_name, spin)
             elif field_type == InspectorFieldType.INT:
                 spin = NoWheelIntSpinBox()
                 spin.setRange(-10000, 10000)
-                if all_same and values:
-                    spin.setValue(values[0])
-                else:
-                    spin.setSpecialValueText("-")
                 spin._field_name = field_name
                 spin._field_type = field_type
-                spin.valueChanged.connect(lambda v, fn=field_name, ft=field_type: 
-                    self._on_multi_field_changed(fn, ft, v))
+                spin._component_class_name = type(comp).__name__  # Store component type for matching
+                spin._multi_value = not (all_same and values)
+                spin.blockSignals(True)
+                if all_same and values:
+                    spin.setSpecialValueText("")
+                    spin.setValue(values[0])
+                else:
+                    # Show "-" for differing values - set to minimum so special text displays
+                    spin.setSpecialValueText("-")
+                    spin.setValue(spin.minimum())
+                spin.blockSignals(False)
+                spin.valueChanged.connect(make_multi_spinbox_handler(field_name, field_type, spin))
                 form.addRow(field_name, spin)
             elif field_type == InspectorFieldType.STRING:
                 line = QtWidgets.QLineEdit()
@@ -5223,21 +5288,33 @@ class {class_name}(Script):
                     line.setText("-")
                 line._field_name = field_name
                 line._field_type = field_type
+                line._component_class_name = type(comp).__name__
                 line.editingFinished.connect(lambda fn=field_name, ft=field_type, w=line: 
-                    self._on_multi_field_changed(fn, ft, w.text()))
+                    self._on_multi_field_changed(fn, ft, w.text(), getattr(w, '_component_class_name', None)))
                 form.addRow(field_name, line)
             elif field_type == InspectorFieldType.COLOR:
-                # Show "-" for multi-selection colors (complex to merge)
-                label = QtWidgets.QLabel("-")
-                form.addRow(field_name, label)
+                # Create color widget with R, G, B sliders for multi-selection
+                color_widget = self._create_color_field_multi(values, field_name, field_type, objects, type(comp).__name__)
+                form.addRow(field_name, color_widget)
+            elif field_type == InspectorFieldType.VECTOR3:
+                # Create vector3 widget with x, y, z spinboxes for multi-selection
+                vector_widget = self._create_vector3_field_multi(values, field_name, field_type, field_info, objects, type(comp).__name__)
+                form.addRow(field_name, vector_widget)
             else:
                 label = QtWidgets.QLabel("-")
                 form.addRow(field_name, label)
         
         return box
     
-    def _on_multi_field_changed(self, field_name: str, field_type, value) -> None:
-        """Apply field change to all selected objects."""
+    def _on_multi_field_changed(self, field_name: str, field_type, value, component_class_name=None) -> None:
+        """Apply field change to all selected objects.
+        
+        Args:
+            field_name: Name of the field being changed
+            field_type: Type of the field (FLOAT, INT, etc.)
+            value: New value to apply
+            component_class_name: Optional class name of the component type to match (for multi-selection)
+        """
         objects = self._selection.game_objects
         if not objects:
             return
@@ -5247,6 +5324,11 @@ class {class_name}(Script):
         for obj in objects:
             # Find matching component in each object
             for comp in obj.components:
+                # If component_class_name is provided, match by type name (for multi-selection)
+                # Otherwise, just check if component has the field
+                if component_class_name is not None:
+                    if type(comp).__name__ != component_class_name:
+                        continue
                 if hasattr(comp, field_name):
                     try:
                         # Convert value based on field type
@@ -5262,6 +5344,36 @@ class {class_name}(Script):
                             if value == "-":
                                 continue
                             setattr(comp, field_name, value)
+                        elif field_type == InspectorFieldType.VECTOR3:
+                            if isinstance(value, (tuple, list)) and len(value) == 3:
+                                # Check if any component is "-" (string) meaning don't change that component
+                                current_val = getattr(comp, field_name, (0.0, 0.0, 0.0))
+                                new_val = []
+                                for i, v in enumerate(value):
+                                    if isinstance(v, str) and v == "-":
+                                        new_val.append(current_val[i] if i < len(current_val) else 0.0)
+                                    else:
+                                        new_val.append(v)
+                                setattr(comp, field_name, tuple(new_val))
+                        elif field_type == InspectorFieldType.COLOR:
+                            if isinstance(value, (tuple, list)) and len(value) >= 3:
+                                # Check if any component is "-" (string) meaning don't change that component
+                                current_val = getattr(comp, field_name, (1.0, 1.0, 1.0))
+                                new_val = []
+                                for i, v in enumerate(value[:3]):
+                                    if isinstance(v, str) and v == "-":
+                                        new_val.append(current_val[i] if i < len(current_val) else 1.0)
+                                    else:
+                                        new_val.append(v)
+                                # Preserve alpha if it exists
+                                if len(current_val) > 3:
+                                    new_val.append(current_val[3])
+                                setattr(comp, field_name, tuple(new_val) if len(new_val) > 3 else tuple(new_val))
+                        
+                        # Special handling for collider components - mark as dirty for visual update
+                        from src.physics.collider import Collider
+                        if isinstance(comp, Collider):
+                            comp._transform_dirty = True
                     except Exception:
                         pass
                     break
@@ -5269,7 +5381,209 @@ class {class_name}(Script):
         self._viewport.update()
         self._viewport.doneCurrent()
         self._mark_scene_dirty()
-    
+
+    def _create_vector3_field_multi(self, values, field_name, field_type, field_info, objects, component_class_name=None):
+        """Create a vector3 editor widget for multi-selection with '-' for differing values.
+        
+        Args:
+            values: List of Vector3 values from selected objects
+            field_name: Name of the field
+            field_type: Field type (VECTOR3)
+            field_info: Field info object
+            objects: Selected objects
+            component_class_name: Optional class name of the component type for proper matching
+        """
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        fields = []
+        
+        # Store component class name for proper matching in multi-selection
+        widget._component_class_name = component_class_name
+        
+        # Extract x, y, z values from each object's vector
+        x_values = []
+        y_values = []
+        z_values = []
+        for v in values:
+            if v is not None and len(v) >= 3:
+                x_values.append(v[0])
+                y_values.append(v[1])
+                z_values.append(v[2])
+        
+        # Helper to check if all values are the same
+        def all_same(vals):
+            if not vals:
+                return True
+            first = vals[0]
+            return all(abs(v - first) < 1e-9 for v in vals)
+        
+        min_val = field_info.min_value if field_info.min_value is not None else -10000.0
+        max_val = field_info.max_value if field_info.max_value is not None else 10000.0
+        step = field_info.step if field_info.step is not None else 0.1
+        decimals = field_info.decimals if field_info.decimals is not None else 2
+        
+        for i, (label, comp_values) in enumerate([("X", x_values), ("Y", y_values), ("Z", z_values)]):
+            spin = self._make_spinbox(min_val, max_val, step, decimals)
+            spin._field_name = field_name
+            spin._field_type = field_type
+            spin._component_index = i
+            spin._multi_value = not (all_same(comp_values) and comp_values)
+            spin._component_class_name = component_class_name
+            spin.blockSignals(True)
+            if all_same(comp_values) and comp_values:
+                spin.setSpecialValueText("")
+                spin.setValue(comp_values[0])
+            else:
+                # Show "-" for differing values
+                spin.setSpecialValueText("-")
+                spin.setValue(spin.minimum())
+            spin.blockSignals(False)
+            spin.valueChanged.connect(lambda v, fn=field_name, ft=field_type, w=widget: 
+                self._on_multi_vector3_field_changed(fn, ft, w))
+            layout.addWidget(spin)
+            fields.append(spin)
+        
+        widget._vector_fields = fields
+        return widget
+
+    def _create_color_field_multi(self, values, field_name, field_type, objects, component_class_name=None):
+        """Create a color editor widget for multi-selection with '-' for differing values.
+        
+        Args:
+            values: List of color values from selected objects
+            field_name: Name of the field
+            field_type: Field type (COLOR)
+            objects: Selected objects
+            component_class_name: Optional class name of the component type for proper matching
+        """
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        
+        # Store component class name for proper matching
+        widget._component_class_name = component_class_name
+        
+        rows = []
+        
+        # Extract R, G, B values from each object's color
+        r_values = []
+        g_values = []
+        b_values = []
+        for v in values:
+            if v is not None and len(v) >= 3:
+                # Handle both 0-1 and 0-255 ranges
+                color = np.array(v[:3], dtype=np.float32)
+                if color.max() <= 1.0:
+                    color = (color * 255.0).astype(int)
+                else:
+                    color = color.astype(int)
+                color = np.clip(color, 0, 255)
+                r_values.append(int(color[0]))
+                g_values.append(int(color[1]))
+                b_values.append(int(color[2]))
+        
+        # Helper to check if all values are the same
+        def all_same(vals):
+            if not vals:
+                return True
+            first = vals[0]
+            return all(v == first for v in vals)
+        
+        for label, comp_values in [("R", r_values), ("G", g_values), ("B", b_values)]:
+            # Create slider row manually to support "-" display
+            row_widget = QtWidgets.QWidget()
+            row_layout = QtWidgets.QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            
+            lbl = QtWidgets.QLabel(label)
+            lbl.setFixedWidth(12)
+            slider = NoWheelSlider(QtCore.Qt.Orientation.Horizontal)
+            slider.setRange(0, 255)
+            
+            if all_same(comp_values) and comp_values:
+                slider.setValue(comp_values[0])
+            else:
+                # Use a special value to indicate mixed; show "-" in label
+                slider.setValue(128)  # Default value, will show "-" in label
+                slider._multi_value = True
+            
+            slider._multi_value = not (all_same(comp_values) and comp_values)
+            
+            value_label = QtWidgets.QLabel("-" if slider._multi_value else str(slider.value()))
+            value_label.setFixedWidth(32)
+            
+            def make_slider_changed_handler(fn, w, vl, s):
+                def handler(val):
+                    # Update the value label - show the actual value now
+                    vl.setText(str(val))
+                    # Clear multi_value flag since user is setting a value
+                    s._multi_value = False
+                    # Call the multi-field change handler
+                    self._on_multi_color_field_changed(fn, field_type, w)
+                return handler
+            
+            slider.valueChanged.connect(make_slider_changed_handler(field_name, widget, value_label, slider))
+            row_layout.addWidget(lbl)
+            row_layout.addWidget(slider)
+            row_layout.addWidget(value_label)
+            
+            slider._component_class_name = component_class_name
+            row_widget._color_slider = slider
+            row_widget._value_label = value_label
+            rows.append(row_widget)
+            layout.addWidget(row_widget)
+        
+        widget._color_rows = rows
+        return widget
+
+    def _on_multi_vector3_field_changed(self, field_name: str, field_type, widget: QtWidgets.QWidget) -> None:
+        """Handle when a vector3 field changes in multi-selection."""
+        if widget is None:
+            return
+        values = []
+        for field in widget._vector_fields:
+            if hasattr(field, '_multi_value') and field._multi_value:
+                # This field had mixed values and user hasn't changed it yet
+                # Check if user actually changed it (special value text is cleared)
+                if field.specialValueText() == "-":
+                    values.append("-")
+                else:
+                    values.append(field.value())
+                    field._multi_value = False
+            else:
+                values.append(field.value())
+        
+        # Get component class name from widget if available
+        component_class_name = getattr(widget, '_component_class_name', None)
+        self._on_multi_field_changed(field_name, field_type, tuple(values), component_class_name)
+
+    def _on_multi_color_field_changed(self, field_name: str, field_type, widget: QtWidgets.QWidget) -> None:
+        """Handle when a color field changes in multi-selection."""
+        if widget is None:
+            return
+        values = []
+        for row in widget._color_rows:
+            slider = row._color_slider
+            if hasattr(slider, '_multi_value') and slider._multi_value:
+                # This slider had mixed values and user hasn't changed it yet
+                values.append("-")
+            else:
+                values.append(slider.value())
+        
+        # Convert 0-255 to 0-1 range for color storage
+        converted = []
+        for v in values:
+            if isinstance(v, str) and v == "-":
+                converted.append("-")
+            else:
+                converted.append(v / 255.0)
+        
+        # Get component class name from widget if available
+        component_class_name = getattr(widget, '_component_class_name', None)
+        self._on_multi_field_changed(field_name, field_type, tuple(converted), component_class_name)
+
     def _refresh_component_box_multi(self, box, objects):
         """Refresh a component box's field values for multi-selection."""
         # Similar to single object but check for differences
@@ -5311,9 +5625,15 @@ class {class_name}(Script):
         layout.addRow("Intensity", intensity)
         box._intensity_field = intensity
         
-        # Color - show "-" for multi (complex to merge)
-        label = QtWidgets.QLabel("-")
-        layout.addRow("Color", label)
+        # Color - use multi-selection color widget
+        colors = []
+        for obj in objects:
+            for c in obj.components:
+                if type(c).__name__ == type(comp).__name__:
+                    colors.append(getattr(c, 'color', (1.0, 1.0, 1.0)))
+                    break
+        color_widget = self._create_color_field_multi(colors, 'color', InspectorFieldType.COLOR, objects, type(comp).__name__)
+        layout.addRow("Color", color_widget)
         
         main_layout.addLayout(layout)
         
@@ -5382,14 +5702,40 @@ class {class_name}(Script):
         layout = QtWidgets.QFormLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         
-        # Center - show "-" for multi (Vector3 complex)
-        label = QtWidgets.QLabel("-")
-        layout.addRow("Center", label)
+        # Center - use multi-selection vector3 widget
+        centers = []
+        for obj in objects:
+            for c in obj.components:
+                if type(c).__name__ == type(comp).__name__:
+                    centers.append(getattr(c, 'center', (0.0, 0.0, 0.0)))
+                    break
+        from src.engine3d.component import InspectorField
+        # Create a minimal field_info for center
+        center_field_info = type('FieldInfo', (), {
+            'min_value': None,
+            'max_value': None,
+            'step': 0.1,
+            'decimals': 2
+        })()
+        center_widget = self._create_vector3_field_multi(centers, 'center', InspectorFieldType.VECTOR3, center_field_info, objects, type(comp).__name__)
+        layout.addRow("Center", center_widget)
         
         # Box collider: size
         if is_box:
-            size_label = QtWidgets.QLabel("-")
-            layout.addRow("Size", size_label)
+            sizes = []
+            for obj in objects:
+                for c in obj.components:
+                    if type(c).__name__ == type(comp).__name__:
+                        sizes.append(getattr(c, 'size', (1.0, 1.0, 1.0)))
+                        break
+            size_field_info = type('FieldInfo', (), {
+                'min_value': None,
+                'max_value': None,
+                'step': 0.1,
+                'decimals': 2
+            })()
+            size_widget = self._create_vector3_field_multi(sizes, 'size', InspectorFieldType.VECTOR3, size_field_info, objects, type(comp).__name__)
+            layout.addRow("Size", size_widget)
         
         # Sphere collider: radius
         if is_sphere:
@@ -5755,26 +6101,46 @@ class {class_name}(Script):
                 spin = NoWheelSpinBox()
                 spin.setRange(-10000, 10000)
                 spin.setDecimals(3)
-                if all_same and values:
-                    spin.setValue(values[0])
-                else:
-                    spin.setSpecialValueText("-")
                 spin._field_name = field_name
                 spin._field_type = field_type
-                spin.valueChanged.connect(lambda v, fn=field_name, ft=field_type: 
-                    self._on_multi_field_changed(fn, ft, v))
+                spin._multi_value = not (all_same and values)
+                spin.blockSignals(True)
+                if all_same and values:
+                    spin.setSpecialValueText("")
+                    spin.setValue(values[0])
+                else:
+                    # Show "-" for differing values - set to minimum so special text displays
+                    spin.setSpecialValueText("-")
+                    spin.setValue(spin.minimum())
+                spin.blockSignals(False)
+                def make_ps_spinbox_handler(fn, ft, s):
+                    def handler(v):
+                        if getattr(s, '_multi_value', False) and v == s.minimum():
+                            return
+                        s._multi_value = False
+                        s.setSpecialValueText("")
+                        self._on_multi_field_changed(fn, ft, v, getattr(s, '_component_class_name', None))
+                    return handler
+                spin._component_class_name = type(comp).__name__
+                spin.valueChanged.connect(make_ps_spinbox_handler(field_name, field_type, spin))
                 form_layout.addRow(self._format_field_label(field_name), spin)
             elif field_type == InspectorFieldType.INT:
                 spin = NoWheelIntSpinBox()
                 spin.setRange(-10000, 10000)
-                if all_same and values:
-                    spin.setValue(values[0])
-                else:
-                    spin.setSpecialValueText("-")
                 spin._field_name = field_name
                 spin._field_type = field_type
-                spin.valueChanged.connect(lambda v, fn=field_name, ft=field_type: 
-                    self._on_multi_field_changed(fn, ft, v))
+                spin._component_class_name = type(comp).__name__
+                spin._multi_value = not (all_same and values)
+                spin.blockSignals(True)
+                if all_same and values:
+                    spin.setSpecialValueText("")
+                    spin.setValue(values[0])
+                else:
+                    # Show "-" for differing values - set to minimum so special text displays
+                    spin.setSpecialValueText("-")
+                    spin.setValue(spin.minimum())
+                spin.blockSignals(False)
+                spin.valueChanged.connect(make_ps_spinbox_handler(field_name, field_type, spin))
                 form_layout.addRow(self._format_field_label(field_name), spin)
             elif field_type == InspectorFieldType.STRING:
                 line = QtWidgets.QLineEdit()
@@ -5788,8 +6154,13 @@ class {class_name}(Script):
                     self._on_multi_field_changed(fn, ft, w.text()))
                 form_layout.addRow(self._format_field_label(field_name), line)
             elif field_type == InspectorFieldType.COLOR:
-                label = QtWidgets.QLabel("-")
-                form_layout.addRow(self._format_field_label(field_name), label)
+                # Create color widget with R, G, B sliders for multi-selection
+                color_widget = self._create_color_field_multi(values, field_name, field_type, objects, type(comp).__name__)
+                form_layout.addRow(self._format_field_label(field_name), color_widget)
+            elif field_type == InspectorFieldType.VECTOR3:
+                # Create vector3 widget with x, y, z spinboxes for multi-selection
+                vector_widget = self._create_vector3_field_multi(values, field_name, field_type, field_info, objects, type(comp).__name__)
+                form_layout.addRow(self._format_field_label(field_name), vector_widget)
             else:
                 label = QtWidgets.QLabel("-")
                 form_layout.addRow(self._format_field_label(field_name), label)
