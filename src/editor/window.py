@@ -1326,6 +1326,11 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._clipboard_files: list[str] = []
         self._clipboard_files_cut: bool = False
         self._components_dirty = True
+        
+        # Undo/Redo system
+        from .undo import UndoManager, set_undo_manager
+        self._undo_manager = UndoManager()
+        set_undo_manager(self._undo_manager)
 
         # Scene file management
         self._current_scene_path: Optional[Path] = None
@@ -1543,7 +1548,27 @@ class EditorWindow(QtWidgets.QMainWindow):
         if not child_obj:
             return
         
+        # Prevent circular parenting: can't parent to itself or to its own descendant
+        if parent_obj:
+            if parent_obj is child_obj:
+                # Can't parent to itself
+                self._viewport.update()
+                self._viewport.doneCurrent()
+                return
+            # Check if parent_obj is a descendant of child_obj
+            current = parent_obj.transform.parent
+            while current:
+                if current.game_object is child_obj:
+                    # Would create a cycle
+                    self._viewport.update()
+                    self._viewport.doneCurrent()
+                    return
+                current = current.parent
+        
         self._viewport.makeCurrent()
+        
+        # Store old parent for undo
+        old_parent = child_obj.transform.parent.game_object if child_obj.transform.parent else None
         
         # Store world position before parenting
         world_pos = child_obj.transform.world_position
@@ -1565,6 +1590,12 @@ class EditorWindow(QtWidgets.QMainWindow):
                 child_obj.transform.position = world_pos
                 child_obj.transform.rotation = world_rot
                 child_obj.transform.scale_xyz = world_scale
+        
+        # Record undo command
+        if hasattr(self, '_undo_manager') and self._undo_manager:
+            from .undo import ReparentGameObjectCommand
+            cmd = ReparentGameObjectCommand(self, child_obj, old_parent, parent_obj)
+            self._undo_manager.record(cmd)
         
         # Refresh the hierarchy tree
         self._refresh_hierarchy()
@@ -1948,31 +1979,35 @@ class {class_name}(Script):
         if not objects:
             return
         
-        # Add component to ALL selected gameObjects
-        # Create a new instance for each object using the component's class
+        from .undo import AddComponentCommand, CompositeCommand
         from src.engine3d.component import Script
+        
+        commands = []
         
         for i, obj in enumerate(objects):
             if i == 0:
-                # First object gets the original component
-                obj.add_component(component)
-                # Watch the script file for changes if it's a Script component
-                self._watch_script_component(component)
+                # First object - use original component
+                comp_to_add = component
+                if hasattr(self, '_undo_manager') and self._undo_manager:
+                    cmd = AddComponentCommand(self, obj, comp_to_add)
+                    cmd.execute()  # Add the component
+                    commands.append(cmd)
+                    self._watch_script_component(comp_to_add)
+                else:
+                    obj.add_component(comp_to_add)
+                    self._watch_script_component(comp_to_add)
             else:
                 # Subsequent objects get a new instance of the same component class
                 try:
-                    # Create new instance of the component's class
                     new_component = type(component)()
                     
-                    # For scripts, we need to ensure the class is properly loaded
+                    # For scripts, copy inspector field values from original
                     if isinstance(component, Script):
-                        # Copy inspector field values from original
                         for attr_name in dir(type(component)):
                             if not attr_name.startswith('_'):
                                 try:
                                     attr = getattr(type(component), attr_name)
                                     if hasattr(attr, 'default_value') or hasattr(attr, 'field_type'):
-                                        # This is an InspectorField, copy the value
                                         val = getattr(component, attr_name, None)
                                         if val is not None:
                                             setattr(new_component, attr_name, val)
@@ -1980,14 +2015,32 @@ class {class_name}(Script):
                                     pass
                     
                     obj.add_component(new_component)
+                    
+                    # Record undo command for this object
+                    if hasattr(self, '_undo_manager') and self._undo_manager:
+                        cmd = AddComponentCommand(self, obj, new_component)
+                        # Mark as executed since we already added
+                        cmd._was_added = True
+                        commands.append(cmd)
                 except Exception:
-                    # Fallback: try deepcopy
                     import copy
                     try:
                         new_component = copy.deepcopy(component)
                         obj.add_component(new_component)
+                        if hasattr(self, '_undo_manager') and self._undo_manager:
+                            cmd = AddComponentCommand(self, obj, new_component)
+                            cmd._was_added = True
+                            commands.append(cmd)
                     except Exception:
-                        pass  # Skip this object if component can't be copied
+                        pass
+        
+        # Record all commands as composite for single undo
+        if commands and hasattr(self, '_undo_manager') and self._undo_manager:
+            if len(commands) == 1:
+                self._undo_manager.record(commands[0])
+            else:
+                composite = CompositeCommand(commands, f"Add {type(component).__name__} ({len(commands)} objects)")
+                self._undo_manager.record(composite)
         
         self._components_dirty = True
         self._update_inspector_fields(force_components=True)
@@ -1995,9 +2048,9 @@ class {class_name}(Script):
         self._mark_scene_dirty()
 
     def _remove_component(self, component) -> None:
-        """Remove a component from the selected game object."""
-        obj = self._selection.game_object
-        if not obj:
+        """Remove a component from selected game objects (all that have it)."""
+        objects = self._selection.game_objects
+        if not objects:
             return
         
         # Don't allow removing Transform
@@ -2006,15 +2059,37 @@ class {class_name}(Script):
             QtWidgets.QMessageBox.warning(self, "Cannot Remove", "Cannot remove Transform component.")
             return
         
-        # Check if component belongs to the selected object
-        if component not in obj.components:
-            return
+        from .undo import DeleteComponentCommand, CompositeCommand
         
-        # Remove the component
-        obj.components.remove(component)
-        component.game_object = None
+        comp_type = type(component)
+        commands = []
         
-        # Refresh the inspector
+        for obj in objects:
+            # Find matching component of same type in this object
+            matching_comp = None
+            for comp in obj.components:
+                if type(comp) == comp_type:
+                    matching_comp = comp
+                    break
+            
+            if matching_comp:
+                if hasattr(self, '_undo_manager') and self._undo_manager:
+                    cmd = DeleteComponentCommand(self, obj, matching_comp)
+                    cmd.execute()  # Remove the component
+                    commands.append(cmd)
+                else:
+                    if matching_comp in obj.components:
+                        obj.components.remove(matching_comp)
+                        matching_comp.game_object = None
+        
+        # Record all commands as composite for single undo
+        if commands and hasattr(self, '_undo_manager') and self._undo_manager:
+            if len(commands) == 1:
+                self._undo_manager.record(commands[0])
+            else:
+                composite = CompositeCommand(commands, f"Remove {comp_type.__name__} ({len(commands)} objects)")
+                self._undo_manager.record(composite)
+        
         self._components_dirty = True
         self._update_inspector_fields(force_components=True)
         self._viewport.update()
@@ -3555,6 +3630,10 @@ class {class_name}(Script):
             if self._window:
                 self._window.clear_objects()
             
+            # Clear undo history for new scene
+            if hasattr(self, '_undo_manager') and self._undo_manager:
+                self._undo_manager.clear()
+            
             # Load the scene
             from src.editor.scene import EditorScene
             self._scene = EditorScene.load(str(path))
@@ -3696,6 +3775,50 @@ class {class_name}(Script):
         # Also add Backspace for delete
         backspace_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Backspace"), self)
         backspace_shortcut.activated.connect(self._on_delete_shortcut)
+        
+        # Ctrl+Z to undo
+        undo_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Z"), self)
+        undo_shortcut.activated.connect(self._on_undo_shortcut)
+        
+        # Ctrl+Y (or Ctrl+Shift+Z) to redo
+        redo_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Y"), self)
+        redo_shortcut.activated.connect(self._on_redo_shortcut)
+        redo_shortcut2 = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+Z"), self)
+        redo_shortcut2.activated.connect(self._on_redo_shortcut)
+
+    def _on_undo_shortcut(self) -> None:
+        """Handle Ctrl+Z shortcut for undo."""
+        if hasattr(self, '_undo_manager') and self._undo_manager:
+            if self._undo_manager.undo():
+                print("Undo performed")
+                # Refresh inspector and viewport to show reverted values visually
+                self._viewport.makeCurrent()
+                self._set_inspector_signals_blocked(True)
+                self._update_inspector_fields(force_components=True)
+                self._set_inspector_signals_blocked(False)
+                self._refresh_hierarchy()
+                self._viewport.update()
+                self._viewport.doneCurrent()
+                self._mark_scene_dirty()
+            else:
+                print("Nothing to undo")
+    
+    def _on_redo_shortcut(self) -> None:
+        """Handle Ctrl+Y/Ctrl+Shift+Z shortcut for redo."""
+        if hasattr(self, '_undo_manager') and self._undo_manager:
+            if self._undo_manager.redo():
+                print("Redo performed")
+                # Refresh inspector and viewport to show redone values visually
+                self._viewport.makeCurrent()
+                self._set_inspector_signals_blocked(True)
+                self._update_inspector_fields(force_components=True)
+                self._set_inspector_signals_blocked(False)
+                self._refresh_hierarchy()
+                self._viewport.update()
+                self._viewport.doneCurrent()
+                self._mark_scene_dirty()
+            else:
+                print("Nothing to redo")
 
     def _setup_deselect_shortcut(self) -> None:
         esc_shortcut = QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_Escape), self)
@@ -4148,18 +4271,25 @@ class {class_name}(Script):
             self._add_object(new_obj, name)
 
     def _add_object(self, obj: GameObject, name: str) -> None:
-        self._viewport.makeCurrent()
-        obj.name = name
-        self._scene.add_object(obj)
-        self._refresh_hierarchy()
-        
-        # Defer selection to ensure widget is fully updated
-        parent_obj = obj.transform.parent.game_object if obj.transform.parent else None
-        QtCore.QTimer.singleShot(0, lambda: self._select_and_expand(obj, parent_obj))
-        
-        self._viewport.update()
-        self._viewport.doneCurrent()
-        self._mark_scene_dirty()
+        # Use undo command system
+        from .undo import AddGameObjectCommand
+        if hasattr(self, '_undo_manager') and self._undo_manager:
+            parent = obj.transform.parent.game_object if obj.transform.parent else None
+            self._undo_manager.push(AddGameObjectCommand(self, obj, name, parent))
+        else:
+            # Fallback to direct add
+            self._viewport.makeCurrent()
+            obj.name = name
+            self._scene.add_object(obj)
+            self._refresh_hierarchy()
+            
+            # Defer selection to ensure widget is fully updated
+            parent_obj = obj.transform.parent.game_object if obj.transform.parent else None
+            QtCore.QTimer.singleShot(0, lambda: self._select_and_expand(obj, parent_obj))
+            
+            self._viewport.update()
+            self._viewport.doneCurrent()
+            self._mark_scene_dirty()
 
     def _remove_selected(self) -> None:
         if not self._selection.game_object:
@@ -4310,6 +4440,10 @@ class {class_name}(Script):
             selected_obj = self._selection.game_object  # User-selected object (if any)
             new_objects = []
             
+            # Record undo commands for all pasted objects
+            from .undo import AddGameObjectCommand, CompositeCommand
+            paste_commands = []
+            
             for snapshot in self._clipboard_snapshots:
                 if snapshot is None:
                     continue
@@ -4342,8 +4476,22 @@ class {class_name}(Script):
                     
                     self._scene.add_object(new_obj)
                     new_objects.append(new_obj)
+                    
+                    # Record undo command for this pasted object
+                    if hasattr(self, '_undo_manager') and self._undo_manager:
+                        cmd = AddGameObjectCommand(self, new_obj, new_obj.name, new_obj.transform.parent.game_object if new_obj.transform.parent else None)
+                        cmd._was_added = True  # Already added above
+                        paste_commands.append(cmd)
             
-            # If it was cut, remove original objects
+            # Record paste as composite undo (one undo removes all pasted objects)
+            if paste_commands and hasattr(self, '_undo_manager') and self._undo_manager:
+                if len(paste_commands) == 1:
+                    self._undo_manager.record(paste_commands[0])
+                else:
+                    composite = CompositeCommand(paste_commands, f"Paste {len(paste_commands)} objects")
+                    self._undo_manager.record(composite)
+            
+            # If it was cut, remove original objects (also record undo for this)
             if self._clipboard_cut:
                 for obj in self._clipboard_objects:
                     if obj in self._scene.objects:
@@ -4572,43 +4720,49 @@ class {class_name}(Script):
         
         filtered = [obj for obj in objects_to_delete if not is_descendant_of_any(obj, objects_to_delete)]
         
-        self._viewport.makeCurrent()
-        
-        # Recursively collect all objects to delete (selected + all their descendants)
-        all_to_delete = []
-        
-        def collect_all_descendants(obj):
-            """Recursively collect object and all its children, grandchildren, etc."""
-            all_to_delete.append(obj)
-            for child_transform in obj.transform.children:
-                if child_transform.game_object:
-                    collect_all_descendants(child_transform.game_object)
-        
-        for obj in filtered:
-            collect_all_descendants(obj)
-        
-        # Remove duplicates while preserving order (bottom-up deletion)
-        # Use a set to track seen objects
-        seen = set()
-        unique_to_delete = []
-        for obj in all_to_delete:
-            if id(obj) not in seen:
-                seen.add(id(obj))
-                unique_to_delete.append(obj)
-        
-        # Delete in reverse order (children before parents)
-        for obj in reversed(unique_to_delete):
-            if obj in self._scene.objects:
-                self._scene.remove_object(obj)
-        
-        self._selection.game_object = None
-        self._refresh_hierarchy()
-        self._update_inspector_fields(force_components=True)
-        if self._window:
-            self._window.editor_selected_object = None
-        self._viewport.update()
-        self._viewport.doneCurrent()
-        self._mark_scene_dirty()
+        # Use undo command system
+        from .undo import DeleteGameObjectCommand
+        if hasattr(self, '_undo_manager') and self._undo_manager:
+            self._undo_manager.push(DeleteGameObjectCommand(self, filtered))
+        else:
+            # Fallback to direct delete
+            self._viewport.makeCurrent()
+            
+            # Recursively collect all objects to delete (selected + all their descendants)
+            all_to_delete = []
+            
+            def collect_all_descendants(obj):
+                """Recursively collect object and all its children, grandchildren, etc."""
+                all_to_delete.append(obj)
+                for child_transform in obj.transform.children:
+                    if child_transform.game_object:
+                        collect_all_descendants(child_transform.game_object)
+            
+            for obj in filtered:
+                collect_all_descendants(obj)
+            
+            # Remove duplicates while preserving order (bottom-up deletion)
+            # Use a set to track seen objects
+            seen = set()
+            unique_to_delete = []
+            for obj in all_to_delete:
+                if id(obj) not in seen:
+                    seen.add(id(obj))
+                    unique_to_delete.append(obj)
+            
+            # Delete in reverse order (children before parents)
+            for obj in reversed(unique_to_delete):
+                if obj in self._scene.objects:
+                    self._scene.remove_object(obj)
+            
+            self._selection.game_object = None
+            self._refresh_hierarchy()
+            self._update_inspector_fields(force_components=True)
+            if self._window:
+                self._window.editor_selected_object = None
+            self._viewport.update()
+            self._viewport.doneCurrent()
+            self._mark_scene_dirty()
 
     def _create_gameobject(self, obj_type: str) -> None:
         """Create a new GameObject of the specified type."""
@@ -4858,7 +5012,17 @@ class {class_name}(Script):
                 scale_changed.append(True)
 
         # Apply to ALL selected objects, preserving unchanged multi-value components
+        # Record undo: store old values before applying
+        from .undo import FieldChangeCommand, CompositeCommand
+        
+        undo_commands = []
+        
         for obj in objects:
+            # Store old values
+            old_pos = obj.transform.position
+            old_rot = obj.transform.rotation
+            old_scale = obj.transform.scale_xyz
+            
             # Position: only update components that changed
             new_pos = list(obj.transform.position)
             for i, (val, changed) in enumerate(zip(pos, pos_changed)):
@@ -4879,6 +5043,23 @@ class {class_name}(Script):
                 if changed and val is not None:
                     new_scale[i] = val
             obj.transform.scale_xyz = tuple(new_scale)
+            
+            # Record undo for this object if any transform changed
+            if hasattr(self, '_undo_manager') and self._undo_manager:
+                if tuple(new_pos) != old_pos:
+                    undo_commands.append(FieldChangeCommand(self, obj.transform, 'position', old_pos, tuple(new_pos)))
+                if tuple(new_rot) != old_rot:
+                    undo_commands.append(FieldChangeCommand(self, obj.transform, 'rotation', old_rot, tuple(new_rot)))
+                if tuple(new_scale) != old_scale:
+                    undo_commands.append(FieldChangeCommand(self, obj.transform, 'scale_xyz', old_scale, tuple(new_scale)))
+        
+        # Record all undo commands
+        if undo_commands and hasattr(self, '_undo_manager') and self._undo_manager:
+            if len(undo_commands) == 1:
+                self._undo_manager.record(undo_commands[0])
+            else:
+                composite = CompositeCommand(undo_commands, f"Change transform ({len(objects)} objects)")
+                self._undo_manager.record(composite)
         
         if self._window:
             self._window.editor_selected_object = objects[0] if objects else None
@@ -5321,6 +5502,10 @@ class {class_name}(Script):
         
         self._viewport.makeCurrent()
         
+        # Track changes for undo
+        from .undo import FieldChangeCommand
+        undo_commands = []
+        
         for obj in objects:
             # Find matching component in each object
             for comp in obj.components:
@@ -5331,19 +5516,25 @@ class {class_name}(Script):
                         continue
                 if hasattr(comp, field_name):
                     try:
+                        # Get old value before changing
+                        old_value = getattr(comp, field_name, None)
+                        
                         # Convert value based on field type
                         if field_type == InspectorFieldType.BOOL:
                             if value == QtCore.Qt.CheckState.PartiallyChecked:
                                 continue  # Don't change on partial
-                            setattr(comp, field_name, value == QtCore.Qt.CheckState.Checked)
+                            new_value = value == QtCore.Qt.CheckState.Checked
+                            setattr(comp, field_name, new_value)
                         elif field_type in (InspectorFieldType.FLOAT, InspectorFieldType.INT):
                             if isinstance(value, str) and value == "-":
                                 continue
-                            setattr(comp, field_name, value)
+                            new_value = value
+                            setattr(comp, field_name, new_value)
                         elif field_type == InspectorFieldType.STRING:
                             if value == "-":
                                 continue
-                            setattr(comp, field_name, value)
+                            new_value = value
+                            setattr(comp, field_name, new_value)
                         elif field_type == InspectorFieldType.VECTOR3:
                             if isinstance(value, (tuple, list)) and len(value) == 3:
                                 # Check if any component is "-" (string) meaning don't change that component
@@ -5354,7 +5545,8 @@ class {class_name}(Script):
                                         new_val.append(current_val[i] if i < len(current_val) else 0.0)
                                     else:
                                         new_val.append(v)
-                                setattr(comp, field_name, tuple(new_val))
+                                new_value = tuple(new_val)
+                                setattr(comp, field_name, new_value)
                         elif field_type == InspectorFieldType.COLOR:
                             if isinstance(value, (tuple, list)) and len(value) >= 3:
                                 # Check if any component is "-" (string) meaning don't change that component
@@ -5368,15 +5560,34 @@ class {class_name}(Script):
                                 # Preserve alpha if it exists
                                 if len(current_val) > 3:
                                     new_val.append(current_val[3])
-                                setattr(comp, field_name, tuple(new_val) if len(new_val) > 3 else tuple(new_val))
+                                new_value = tuple(new_val) if len(new_val) > 3 else tuple(new_val)
+                                setattr(comp, field_name, new_value)
+                        else:
+                            # Unknown field type, just set directly
+                            new_value = value
+                            setattr(comp, field_name, new_value)
                         
                         # Special handling for collider components - mark as dirty for visual update
                         from src.physics.collider import Collider
                         if isinstance(comp, Collider):
                             comp._transform_dirty = True
+                        
+                        # Track for undo - record for all objects that changed
+                        if hasattr(self, '_undo_manager') and self._undo_manager:
+                            if old_value != new_value:
+                                undo_commands.append(FieldChangeCommand(self, comp, field_name, old_value, new_value))
                     except Exception:
                         pass
                     break
+        
+        # Add undo commands to stack - wrap multiple in CompositeCommand for single undo
+        if undo_commands and hasattr(self, '_undo_manager') and self._undo_manager:
+            if len(undo_commands) == 1:
+                self._undo_manager.record(undo_commands[0])
+            else:
+                from .undo import CompositeCommand
+                composite = CompositeCommand(undo_commands, f"Change {field_name} ({len(undo_commands)} objects)")
+                self._undo_manager.record(composite)
         
         self._viewport.update()
         self._viewport.doneCurrent()
@@ -6864,9 +7075,28 @@ class {class_name}(Script):
 
     def _on_inspector_field_changed(self, comp, field_name: str, value: Any) -> None:
         """Handle when an inspector field value changes."""
+        # Capture old value for undo
+        old_value = None
+        try:
+            old_value = comp.get_inspector_field_value(field_name)
+        except Exception:
+            old_value = getattr(comp, field_name, None)
+        
+        # Apply the change
         comp.set_inspector_field_value(field_name, value)
+        
+        # Force viewport refresh to apply visual changes immediately
+        self._viewport.makeCurrent()
         self._viewport.update()
+        self._viewport.doneCurrent()
         self._mark_scene_dirty()
+        
+        # Record undo (only if value actually changed)
+        if hasattr(self, '_undo_manager') and self._undo_manager:
+            if old_value != value:
+                from .undo import FieldChangeCommand
+                cmd = FieldChangeCommand(self, comp, field_name, old_value, value)
+                self._undo_manager.record(cmd)
         
         # If editing a prefab, save changes
         if getattr(getattr(comp, 'game_object', None), '_prefab_edit_target', None) is not None:
@@ -6880,13 +7110,34 @@ class {class_name}(Script):
         """Handle when a color field value changes."""
         if widget is None:
             return
+        
+        # Capture old value for undo
+        old_value = None
+        try:
+            old_value = comp.get_inspector_field_value(field_name)
+        except Exception:
+            old_value = getattr(comp, field_name, None)
+        
         channels = []
         for row in widget._color_rows:
             row._value_label.setText(str(row._color_slider.value()))
             channels.append(row._color_slider.value() / 255.0)
-        comp.set_inspector_field_value(field_name, tuple(channels))
+        new_value = tuple(channels)
+        
+        comp.set_inspector_field_value(field_name, new_value)
+        
+        # Force viewport refresh to apply visual changes immediately
+        self._viewport.makeCurrent()
         self._viewport.update()
+        self._viewport.doneCurrent()
         self._mark_scene_dirty()
+        
+        # Record undo
+        if hasattr(self, '_undo_manager') and self._undo_manager:
+            if old_value != new_value:
+                from .undo import FieldChangeCommand
+                cmd = FieldChangeCommand(self, comp, field_name, old_value, new_value)
+                self._undo_manager.record(cmd)
         
         # If editing a prefab, save changes
         if getattr(getattr(comp, 'game_object', None), '_prefab_edit_target', None) is not None:
@@ -6898,16 +7149,36 @@ class {class_name}(Script):
         """Handle when a vector3 field value changes."""
         if widget is None:
             return
+        
+        # Capture old value for undo
+        old_value = None
+        try:
+            old_value = comp.get_inspector_field_value(field_name)
+        except Exception:
+            old_value = getattr(comp, field_name, None)
+        
         values = tuple(field.value() for field in widget._vector_fields)
-        comp.set_inspector_field_value(field_name, values)
+        new_value = values
+        
+        comp.set_inspector_field_value(field_name, new_value)
         
         # Special handling for collider center changes
         from src.physics.collider import Collider
         if isinstance(comp, Collider):
             comp._transform_dirty = True
         
+        # Force viewport refresh to apply visual changes immediately
+        self._viewport.makeCurrent()
         self._viewport.update()
+        self._viewport.doneCurrent()
         self._mark_scene_dirty()
+        
+        # Record undo
+        if hasattr(self, '_undo_manager') and self._undo_manager:
+            if old_value != new_value:
+                from .undo import FieldChangeCommand
+                cmd = FieldChangeCommand(self, comp, field_name, old_value, new_value)
+                self._undo_manager.record(cmd)
         
         # If editing a prefab, save changes
         if getattr(getattr(comp, 'game_object', None), '_prefab_edit_target', None) is not None:

@@ -514,6 +514,12 @@ class Component:
         descriptor = getattr(type(self), name, None)
         if isinstance(descriptor, InspectorField):
             setattr(self, name, value)
+        else:
+            # Fallback for regular properties/attributes (e.g., Transform.position)
+            setattr(self, name, value)
+        # Mark dirty for visual refresh (e.g., collider bounds recalculation)
+        if hasattr(self, '_transform_dirty'):
+            self._transform_dirty = True
 
 
 class WaitForSeconds:
