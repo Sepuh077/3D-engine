@@ -412,29 +412,7 @@ class ParticleSystem(Component):
     def update(self) -> None:
         delta_time = Time.delta_time
         
-        # Determine the correct container (may have been wrong at on_attach during scene restore)
-        from .drawing import get_window
-        window = get_window()
-        correct_container = None
-        if self.game_object and hasattr(self.game_object, '_scene') and self.game_object._scene:
-            correct_container = self.game_object._scene
-        elif window and window.current_scene:
-            correct_container = window.current_scene
-        elif window:
-            correct_container = window
-        
-        # If container changed (e.g., scene was restored), clear old particles and rebuild
-        if correct_container is not None and correct_container is not self._container:
-            if self._particles and self._container is not None:
-                for p in self._particles:
-                    try:
-                        self._container.remove_object(p.obj)
-                    except Exception:
-                        pass
-            self._particles = []
-            self._container = correct_container
-        
-        # Ensure pool is built if container is available but particles don't exist
+        # Ensure pool is built (may have been deferred if container wasn't ready at on_attach)
         if not self._particles and self._container is not None:
             try:
                 self._build_pool()

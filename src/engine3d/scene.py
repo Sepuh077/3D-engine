@@ -430,12 +430,30 @@ class Scene3D:
         go_registry: Dict[str, GameObject] = {}
         for obj_data in data.get("objects", []):
             obj = GameObject._from_prefab_dict(obj_data)
+            obj._scene = scene  # Set scene reference so components can find it
             scene.objects.append(obj)
             go_registry[obj._id] = obj
 
         # Second pass: Resolve component references in all objects
         for obj in scene.objects:
             cls._resolve_component_references(obj, go_registry)
+
+        # Third pass: Fix ParticleSystem containers that were attached to the
+        # wrong scene during on_attach() (on_attach runs inside _from_prefab_dict
+        # before _scene is set, so the container may point to the old/current scene)
+        from .particle import ParticleSystem
+        for obj in scene.objects:
+            for comp in obj.components:
+                if isinstance(comp, ParticleSystem) and comp._container is not scene:
+                    # Remove any particles that were built in the wrong container
+                    old_container = comp._container
+                    for p in comp._particles:
+                        if (old_container is not None
+                                and hasattr(old_container, 'objects')
+                                and p.obj in old_container.objects):
+                            old_container.objects.remove(p.obj)
+                    comp._particles = []
+                    comp._container = scene
 
         for obj in scene.objects:
             for cam in obj.get_components(Camera3D):

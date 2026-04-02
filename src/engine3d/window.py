@@ -1214,18 +1214,17 @@ class Window3D:
             col = tuple(int(c * 255) for c in color) + (255,)
         else:
             col = tuple(int(c * 255) for c in color)
-        # gfxdraw.aacircle requires signed short integers (-32768 to 32767)
-        # Fall back to pygame.draw.circle if out of range
-        use_gfxdraw = (border_width > 0 and HAS_GFXDRAW and aa and 
-                       -32768 <= x <= 32767 and -32768 <= y <= 32767 and 
-                       0 <= radius <= 32767)
-        if use_gfxdraw:
-            # Anti-aliased outline
-            gfxdraw.aacircle(self._2d_surface, x, y, radius, col[:3])
-            if border_width > 1:
-                gfxdraw.aacircle(self._2d_surface, x, y, radius - 1, col[:3])  # thicker sim
+        x, y, radius = int(x), int(y), int(radius)
+        if border_width > 0 and HAS_GFXDRAW and aa:
+            # gfxdraw uses signed shorts; fall back for out-of-range values
+            if -32768 <= x <= 32767 and -32768 <= y <= 32767 and 0 < radius <= 32767:
+                gfxdraw.aacircle(self._2d_surface, x, y, radius, col[:3])
+                if border_width > 1:
+                    gfxdraw.aacircle(self._2d_surface, x, y, radius - 1, col[:3])  # thicker sim
+            else:
+                pygame.draw.circle(self._2d_surface, col, (x, y), max(1, abs(radius)), border_width)
         else:
-            pygame.draw.circle(self._2d_surface, col, (x, y), radius, border_width)
+            pygame.draw.circle(self._2d_surface, col, (x, y), max(1, abs(radius)), border_width)
     
     def draw_ellipse(self, x: int, y: int, width: int, height: int,
                      color: ColorType, border_width: int = 2, aa: bool = True) -> None:  # thicker + AA default
@@ -1235,15 +1234,14 @@ class Window3D:
         else:
             col = tuple(int(c * 255) for c in color)
         rect = pygame.Rect(x, y, width, height)
-        # gfxdraw.aaellipse requires signed short integers (-32768 to 32767)
-        cx, cy = x + width//2, y + height//2
-        rx, ry = width//2, height//2
-        use_gfxdraw = (border_width > 0 and HAS_GFXDRAW and aa and
-                       -32768 <= cx <= 32767 and -32768 <= cy <= 32767 and
-                       0 <= rx <= 32767 and 0 <= ry <= 32767)
-        if use_gfxdraw:
-            # Anti-aliased outline (gfxdraw no width, sim with rect adjust)
-            gfxdraw.aaellipse(self._2d_surface, cx, cy, rx, ry, col[:3])
+        if border_width > 0 and HAS_GFXDRAW and aa:
+            # gfxdraw uses signed shorts; fall back for out-of-range values
+            cx, cy, rx, ry = x + width//2, y + height//2, width//2, height//2
+            if (-32768 <= cx <= 32767 and -32768 <= cy <= 32767 and
+                    0 < rx <= 32767 and 0 < ry <= 32767):
+                gfxdraw.aaellipse(self._2d_surface, cx, cy, rx, ry, col[:3])
+            else:
+                pygame.draw.ellipse(self._2d_surface, col, rect, border_width)
         else:
             pygame.draw.ellipse(self._2d_surface, col, rect, border_width)
     
@@ -1256,10 +1254,7 @@ class Window3D:
             col = tuple(int(c * 255) for c in color) + (255,)
         else:
             col = tuple(int(c * 255) for c in color)
-        # gfxdraw.aapolygon requires signed short integers (-32768 to 32767)
-        use_gfxdraw = (border_width > 0 and HAS_GFXDRAW and aa and
-                       all(-32768 <= p[0] <= 32767 and -32768 <= p[1] <= 32767 for p in points))
-        if use_gfxdraw:
+        if border_width > 0 and HAS_GFXDRAW and aa:
             gfxdraw.aapolygon(self._2d_surface, points, col[:3])
         else:
             pygame.draw.polygon(self._2d_surface, col, points, border_width)

@@ -1637,9 +1637,32 @@ class EditorWindow(QtWidgets.QMainWindow):
         content_layout.setSpacing(6)
         content_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
 
+        # Asset info panel (for folder/file display, hidden by default)
+        self._asset_info_widget = QtWidgets.QWidget(content)
+        _ai_layout = QtWidgets.QVBoxLayout(self._asset_info_widget)
+        _ai_layout.setContentsMargins(0, 0, 0, 0)
+        _ai_layout.setSpacing(6)
+        self._asset_info_title = QtWidgets.QLabel("", self._asset_info_widget)
+        self._asset_info_title.setStyleSheet("font-size: 14px; font-weight: bold; padding: 4px 0;")
+        _ai_layout.addWidget(self._asset_info_title)
+        self._asset_info_name = QtWidgets.QLabel("", self._asset_info_widget)
+        self._asset_info_name.setStyleSheet("padding: 2px 0;")
+        self._asset_info_name.setWordWrap(True)
+        _ai_layout.addWidget(self._asset_info_name)
+        self._asset_info_btn = QtWidgets.QPushButton("Open", self._asset_info_widget)
+        self._asset_info_btn.setVisible(False)
+        _ai_layout.addWidget(self._asset_info_btn)
+        self._asset_info_content = QtWidgets.QPlainTextEdit(self._asset_info_widget)
+        self._asset_info_content.setReadOnly(True)
+        self._asset_info_content.setVisible(False)
+        _ai_layout.addWidget(self._asset_info_content)
+        self._asset_info_widget.setVisible(False)
+        content_layout.addWidget(self._asset_info_widget)
+
         self._inspector_name = QtWidgets.QLineEdit(content)
         self._inspector_name.editingFinished.connect(self._rename_selected)
-        content_layout.addWidget(QtWidgets.QLabel("Name", content))
+        self._name_label = QtWidgets.QLabel("Name", content)
+        content_layout.addWidget(self._name_label)
         content_layout.addWidget(self._inspector_name)
 
         # Prefab source indicator (hidden by default)
@@ -1658,7 +1681,8 @@ class EditorWindow(QtWidgets.QMainWindow):
             self._inspector_tag.lineEdit().editingFinished.connect(self._set_selected_tag)
         # No editingFinished on lineEdit - activated handles selection, 
         # and per-frame update handles text sync
-        content_layout.addWidget(QtWidgets.QLabel("Tag", content))
+        self._tag_label = QtWidgets.QLabel("Tag", content)
+        content_layout.addWidget(self._tag_label)
         content_layout.addWidget(self._inspector_tag)
 
         self._transform_group = QtWidgets.QGroupBox("Transform", content)
@@ -1693,14 +1717,16 @@ class EditorWindow(QtWidgets.QMainWindow):
 
         content_layout.addWidget(self._transform_group)
 
-        comp_header = QtWidgets.QHBoxLayout()
+        self._comp_header_widget = QtWidgets.QWidget(content)
+        comp_header = QtWidgets.QHBoxLayout(self._comp_header_widget)
+        comp_header.setContentsMargins(0, 0, 0, 0)
         comp_header.addWidget(QtWidgets.QLabel("Components"))
         add_comp_btn = QtWidgets.QPushButton("+")
         add_comp_btn.setFixedWidth(30)
         add_comp_btn.clicked.connect(self._show_add_component_menu)
         self._add_component_button = add_comp_btn
         comp_header.addWidget(add_comp_btn)
-        content_layout.addLayout(comp_header)
+        content_layout.addWidget(self._comp_header_widget)
 
         self._components_container = QtWidgets.QWidget(content)
         self._components_layout = QtWidgets.QVBoxLayout(self._components_container)
@@ -2382,6 +2408,15 @@ class {class_name}(Script):
             self._file_view.set_current_path(parent)
             self._update_path_label()
 
+    # File extensions that should open in VS Code on double-click
+    _CODE_TEXT_EXTENSIONS = {
+        '.py', '.cpp', '.c', '.cs', '.h', '.hpp', '.java', '.js', '.ts',
+        '.json', '.xml', '.yaml', '.yml', '.toml', '.ini', '.cfg',
+        '.txt', '.md', '.rst', '.log', '.csv', '.sh', '.bat',
+        '.html', '.css', '.scss', '.less', '.sql', '.lua', '.rb',
+        '.go', '.rs', '.swift', '.kt', '.gradle', '.cmake',
+    }
+
     def _on_file_double_clicked(self, path: str) -> None:
         """Handle file double click from icon view."""
         ext = Path(path).suffix.lower()
@@ -2391,9 +2426,28 @@ class {class_name}(Script):
             self._load_scene_with_check(Path(path))
             return
         
+        # Handle code/text files - open in VS Code
+        if ext in self._CODE_TEXT_EXTENSIONS:
+            self._open_in_vscode(path)
+            return
+        
         # For other files, add to scene as 3D object
         # Double click uses center position (0.5, 0.5)
         self._add_3d_object_from_path(path, 0.5, 0.5)
+
+    def _open_in_vscode(self, path: str) -> None:
+        """Try to open a file in VS Code. Log an error if VS Code is not installed."""
+        import subprocess
+        try:
+            subprocess.Popen(['code', str(self.project_root), '--goto', path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except FileNotFoundError:
+            msg = f"Cannot open '{Path(path).name}': VS Code ('code' command) is not installed or not in PATH."
+            if hasattr(self, '_console_widget') and self._console_widget:
+                self._console_widget.log(msg, 'ERROR')
+                if hasattr(self, '_bottom_tab_widget'):
+                    self._bottom_tab_widget.setCurrentIndex(1)
+            else:
+                print(msg)
     
     def _load_scene_with_check(self, path: Path) -> None:
         """Load a scene, prompting to save if there are unsaved changes."""
@@ -2560,7 +2614,8 @@ class {class_name}(Script):
             return
         
         path = self._file_model.filePath(index)
-        ext = Path(path).suffix.lower()
+        p = Path(path)
+        ext = p.suffix.lower()
         
         # Clear hierarchy selection to ensure exclusive selection
         if hasattr(self, '_hierarchy_tree') and self._hierarchy_tree is not None:
@@ -2569,17 +2624,85 @@ class {class_name}(Script):
         
         # If it's a .prefab file, show the prefab inspector
         if ext == '.prefab':
+            self._hide_asset_info()
             self._show_prefab_inspector(path)
         elif ext == '.asset':
             # Show ScriptableObject inspector
+            self._hide_asset_info()
             self._show_scriptable_object_inspector(path)
-        else:
-            # Clear prefab inspector if not a prefab file
+        elif p.is_dir():
+            # Show folder info in inspector
             self._current_prefab_path = None
             self._current_prefab = None
-            # Clear scriptable object inspector
             self._current_scriptable_object = None
-    
+            self._show_asset_info_folder(p)
+        else:
+            # Show generic file info in inspector
+            self._current_prefab_path = None
+            self._current_prefab = None
+            self._current_scriptable_object = None
+            self._show_asset_info_file(p)
+
+    def _show_asset_info_folder(self, path: Path) -> None:
+        """Show folder info in the inspector panel."""
+        self._hide_go_inspector_widgets()
+        self._asset_info_title.setText("📁  Folder")
+        self._asset_info_name.setText(path.name)
+        self._asset_info_btn.setVisible(True)
+        self._asset_info_btn.setText("Open")
+        # Disconnect any previous signal then connect to navigate
+        try:
+            self._asset_info_btn.clicked.disconnect()
+        except RuntimeError:
+            pass
+        self._asset_info_btn.clicked.connect(lambda: self._navigate_to_path(path))
+        self._asset_info_content.setVisible(False)
+        self._asset_info_widget.setVisible(True)
+
+    def _show_asset_info_file(self, path: Path) -> None:
+        """Show generic file info in the inspector panel."""
+        self._hide_go_inspector_widgets()
+        self._asset_info_title.setText("📄  File")
+        self._asset_info_name.setText(path.name)
+        self._asset_info_btn.setVisible(False)
+        # Try to read and display file content
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            # Limit to first 10000 chars to avoid UI lag
+            if len(text) > 10000:
+                text = text[:10000] + "\n\n... (truncated)"
+            self._asset_info_content.setPlainText(text)
+            self._asset_info_content.setVisible(True)
+        except Exception:
+            # Binary or unreadable file
+            self._asset_info_content.setPlainText("(binary file)")
+            self._asset_info_content.setVisible(True)
+        self._asset_info_widget.setVisible(True)
+
+    def _hide_go_inspector_widgets(self) -> None:
+        """Hide the standard GameObject inspector widgets (Name, Tag, Components header)."""
+        self._name_label.setVisible(False)
+        self._inspector_name.setVisible(False)
+        self._inspector_name.setEnabled(False)
+        self._prefab_source_label.setVisible(False)
+        self._tag_label.setVisible(False)
+        self._inspector_tag.setVisible(False)
+        self._inspector_tag.setEnabled(False)
+        self._transform_group.setVisible(False)
+        self._comp_header_widget.setVisible(False)
+        self._components_container.setVisible(False)
+        self._clear_component_fields()
+
+    def _hide_asset_info(self) -> None:
+        """Hide the asset info panel and restore standard inspector widgets."""
+        self._asset_info_widget.setVisible(False)
+        self._name_label.setVisible(True)
+        self._inspector_name.setVisible(True)
+        self._tag_label.setVisible(True)
+        self._inspector_tag.setVisible(True)
+        self._comp_header_widget.setVisible(True)
+        self._components_container.setVisible(True)
+
     def _show_prefab_inspector(self, path: str) -> None:
         """Show the prefab inspector for a .prefab file."""
         from src.engine3d.gameobject import Prefab
@@ -3303,7 +3426,7 @@ class {class_name}(Script):
             if self._window:
                 self._window.active_camera_override = None
                 self._window.editor_show_axis = False
-                self._window.editor_show_gizmo = False
+                self._window.show_editor_overlays = False
             
             # Initialize all scripts
             for obj in self._scene.objects:
@@ -3358,7 +3481,7 @@ class {class_name}(Script):
             if self._window:
                 self._window.active_camera_override = self._editor_camera
                 self._window.editor_show_axis = True
-                self._window.editor_show_gizmo = True
+                self._window.show_editor_overlays = True
             
             # Restore scene state
             if self._original_scene_data:
@@ -3375,10 +3498,11 @@ class {class_name}(Script):
                 self._restore_prefab_connections()
                 
                 self._window.show_scene(self._scene)
+                self._stop_all_particle_systems()
                 
                 self._refresh_hierarchy()
                 
-                # Restore previous selection (so user sees the particle system playing in inspector)
+                # Restore previous selection (particle system will auto-play on selected GO)
                 restored_selection = []
                 if hasattr(self, '_pre_play_selection_ids'):
                     for obj_id in self._pre_play_selection_ids:
@@ -3583,6 +3707,7 @@ class {class_name}(Script):
         self._init_scriptable_objects()
         
         self._window.show_scene(self._scene)
+        self._stop_all_particle_systems()
 
         self._viewport.resized.connect(self._on_viewport_resized)
 
@@ -3658,6 +3783,7 @@ class {class_name}(Script):
             # Show the loaded scene
             if self._window:
                 self._window.show_scene(self._scene)
+            self._stop_all_particle_systems()
             
             self._refresh_hierarchy()
             self._select_object(None)
@@ -3684,6 +3810,16 @@ class {class_name}(Script):
                 print(error_msg)
                 print(tb)
     
+    def _stop_all_particle_systems(self) -> None:
+        """Stop all particle systems in the scene (editor idle state)."""
+        from src.engine3d.particle import ParticleSystem
+        if self._scene:
+            for obj in self._scene.objects:
+                for comp in obj.components:
+                    if isinstance(comp, ParticleSystem):
+                        comp.stop(clear_particles=True)
+                        comp.play_in_editor = False
+
     def _restore_prefab_connections(self) -> None:
         """Restore prefab connections for all objects in the scene."""
         from src.engine3d.gameobject import Prefab
@@ -4857,6 +4993,9 @@ class {class_name}(Script):
             self._current_prefab = None
             self._current_prefab_path = None
         
+        # Hide asset info panel if visible
+        self._hide_asset_info()
+        
         # Collect all selected GameObjects
         selected_objects = []
         for item in items:
@@ -4904,6 +5043,14 @@ class {class_name}(Script):
                 for comp in obj.components:
                     if isinstance(comp, ParticleSystem) and comp.is_playing:
                         comp.stop(clear_particles=True)
+        
+        # Start particle systems on newly selected objects (editor preview)
+        if not self._playing:
+            for obj in objects:
+                if obj not in previous_selection:
+                    for comp in obj.components:
+                        if isinstance(comp, ParticleSystem) and not comp.is_playing:
+                            comp.play()
         
         # Commit any pending edits before changing selection
         # This ensures field changes are applied before rebuilding inspector
