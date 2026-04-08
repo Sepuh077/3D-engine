@@ -975,6 +975,7 @@ class Window3D:
                 self._ensure_mesh(obj3d)
         
         scene.on_show()
+        self.start()
     
     @property
     def current_scene(self) -> Optional['Scene3D']:
@@ -2113,7 +2114,7 @@ class Window3D:
     # Main loop
     # =========================================================================
 
-    def start(self, fps: int = 60, start_scripts: bool = True):
+    def start(self, start_scripts: bool = True):
         """
         Initialize the window for manual ticking or run().
         
@@ -2122,7 +2123,6 @@ class Window3D:
             start_scripts: If True, call start_scripts() on all objects.
                           Set to False when the editor wants to control script lifecycle.
         """
-        self._fps = fps
         if not self._setup_done:
             self.setup()
             self._setup_done = True
@@ -2183,7 +2183,7 @@ class Window3D:
         Args:
             fps: Target frames per second (default 60)
         """
-        self.start(fps)
+        self._fps = fps
 
         while self._running:
             self.tick(fps)
