@@ -948,12 +948,14 @@ class Window3D:
     # Scene management
     # =========================================================================
     
-    def show_scene(self, scene: 'Scene3D'):
+    def show_scene(self, scene: 'Scene3D', start_scripts: bool = True):
         """
         Switch to a different scene.
         
         Args:
             scene: The Scene3D to switch to
+            start_scripts: If True, call start_scripts() on all objects.
+                          Set to False when the editor wants to control script lifecycle.
         """
         
         # Detach current scene
@@ -975,7 +977,7 @@ class Window3D:
                 self._ensure_mesh(obj3d)
         
         scene.on_show()
-        self.start()
+        self.start(start_scripts=start_scripts)
     
     @property
     def current_scene(self) -> Optional['Scene3D']:

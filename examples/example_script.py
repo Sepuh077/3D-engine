@@ -255,6 +255,96 @@ class ColorChanger(Script):
             obj3d.color = (r, g, b)
 
 
+# ============================================================================
+# Serializable Enum Example
+# ============================================================================
+
+from enum import Enum
+from engine3d.engine3d import InspectorField
+
+
+class GameState(Enum):
+    """Example enum for game states - shows in inspector as dropdown."""
+    MENU = 0
+    PLAYING = 1
+    PAUSED = 2
+    GAME_OVER = 3
+
+
+class WeaponType(Enum):
+    """Example enum for weapon types - shows in inspector as dropdown."""
+    SWORD = 1
+    AXE = 2
+    BOW = 3
+    STAFF = 4
+    DAGGER = 5
+
+
+class Difficulty(Enum):
+    """Example enum for difficulty levels - shows in inspector as dropdown."""
+    EASY = "easy"
+    NORMAL = "normal"
+    HARD = "hard"
+    NIGHTMARE = "nightmare"
+
+
+class EnumDemoScript(Script):
+    """
+    Demonstrates serializable enum fields in the inspector.
+    
+    This script shows how to define enum fields that appear as dropdown
+    menus in the editor inspector, similar to Unity's enum support.
+    
+    Features demonstrated:
+    - Integer-based enums (GameState, WeaponType)
+    - String-based enums (Difficulty)
+    - Using enum values in game logic
+    - Serialization/deserialization of enum values
+    """
+    
+    # Integer-based enum fields
+    current_state = InspectorField(GameState, default=GameState.MENU, tooltip="Current game state")
+    equipped_weapon = InspectorField(WeaponType, default=WeaponType.SWORD, tooltip="Equipped weapon type")
+    
+    # String-based enum field
+    difficulty = InspectorField(Difficulty, default=Difficulty.NORMAL, tooltip="Game difficulty")
+    
+    # Regular fields for comparison
+    player_name = InspectorField(str, default="Hero", tooltip="Player name")
+    health = InspectorField(int, default=100, min_value=0, max_value=100, tooltip="Player health")
+    
+    def start(self):
+        """Called once when the script starts."""
+        print(f"[EnumDemoScript] Started on {self.game_object.name}")
+        print(f"  Current State: {self.current_state} (value: {self.current_state.value if isinstance(self.current_state, Enum) else self.current_state})")
+        print(f"  Weapon: {self.equipped_weapon} (value: {self.equipped_weapon.value if isinstance(self.equipped_weapon, Enum) else self.equipped_weapon})")
+        print(f"  Difficulty: {self.difficulty} (value: {self.difficulty.value if isinstance(self.difficulty, Enum) else self.difficulty})")
+        print(f"  Player: {self.player_name}, Health: {self.health}")
+    
+    def update(self):
+        """Called every frame - demonstrates using enum values."""
+        # Example: Check game state and act accordingly
+        # Note: The stored value is the enum's value (int or string), 
+        # so we compare with the value or convert to enum member
+        
+        # Get the current state value
+        state_value = self.current_state
+        
+        # If you need the enum member, you can get it:
+        if isinstance(state_value, Enum):
+            current_game_state = state_value
+        else:
+            current_game_state = GameState(state_value)
+        
+        # Now you can use it in your logic
+        if current_game_state == GameState.PLAYING:
+            # Game logic for playing state
+            pass
+        elif current_game_state == GameState.PAUSED:
+            # Game logic for paused state
+            pass
+
+
 class ScriptScene(Scene3D):
     """Demo showcasing the Script component system."""
     
@@ -317,6 +407,14 @@ class ScriptScene(Scene3D):
         self.coro_obj.transform.position = (0, 2, 0)
         self.coro_obj.name = "CoroutineCube"
         self.coro_obj.add_component(CoroutineDemo())
+        
+        # Create enum demo object
+        self.enum_demo_obj = self.add_object(create_cube(0.8, color=Color.PURPLE))
+        self.enum_demo_obj.transform.position = (5, 1, 0)
+        self.enum_demo_obj.name = "EnumDemo"
+        self.enum_demo_obj.add_component(Rigidbody(is_static=True))
+        self.enum_demo_obj.add_component(BoxCollider())
+        self.enum_demo_obj.add_component(EnumDemoScript())
         
         # Camera setup
         self.camera.position = (0, 8, 12)

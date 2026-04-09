@@ -108,6 +108,9 @@ from engine3d.engine3d.drawing import (
     draw_image,
 )
 
+# Resources
+from engine3d.engine3d.resources import Resources
+
 
 __all__ = [
     'Window3D',
@@ -178,6 +181,8 @@ __all__ = [
     'draw_polygon',
     'draw_line',
     'draw_image',
+    # Resources
+    'Resources',
 ]
 
 __version__ = '0.1.0'

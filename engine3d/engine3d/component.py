@@ -218,6 +218,7 @@ class InspectorFieldInfo:
         step: Step increment (for numeric types)
         decimals: Number of decimal places (for float types)
         enum_options: List of (value, label) tuples for enum types
+        enum_type: The Enum subclass type (for ENUM type)
         tooltip: Optional tooltip text
         list_item_type: The type of items in a list field (for LIST type)
         scriptable_object_type: The ScriptableObject subclass type (for SCRIPTABLE_OBJECT_REF type)
@@ -231,6 +232,7 @@ class InspectorFieldInfo:
     step: Optional[float] = None
     decimals: Optional[int] = None
     enum_options: Optional[List[Tuple[Any, str]]] = None
+    enum_type: Optional[type] = None
     tooltip: Optional[str] = None
     list_item_type: Optional[Union[type, InspectorFieldType]] = None
     scriptable_object_type: Optional[type] = None
@@ -341,6 +343,8 @@ class InspectorField(Generic[_T]):
                 self._original_field_type = field_type
             elif issubclass(field_type, Enum):
                 self.field_type = InspectorFieldType.ENUM
+                # Store the enum class for serialization and type info
+                self._original_field_type = field_type
                 # Auto-generate enum options if not provided
                 if enum_options is None:
                     enum_options = [(e.value, e.name) for e in field_type]
@@ -465,6 +469,7 @@ class InspectorField(Generic[_T]):
             step=self.step,
             decimals=self.decimals,
             enum_options=self.enum_options,
+            enum_type=self._original_field_type if self.field_type == InspectorFieldType.ENUM else None,
             tooltip=self.tooltip,
             list_item_type=self.list_item_type,
             scriptable_object_type=self._original_field_type if self.field_type == InspectorFieldType.SCRIPTABLE_OBJECT_REF else None,
@@ -487,6 +492,13 @@ class InspectorField(Generic[_T]):
     def serializable_type(self) -> Optional[type]:
         """Get the serializable type for SERIALIZABLE fields."""
         if self.field_type == InspectorFieldType.SERIALIZABLE:
+            return self._original_field_type
+        return None
+    
+    @property
+    def enum_type(self) -> Optional[type]:
+        """Get the enum type for ENUM fields."""
+        if self.field_type == InspectorFieldType.ENUM:
             return self._original_field_type
         return None
 

@@ -2,6 +2,7 @@ from typing import List, Optional, Type, TypeVar, Generator, Any, Dict, Tuple, U
 import importlib
 import json
 import uuid
+from enum import Enum
 
 import numpy as np
 
@@ -293,6 +294,8 @@ class GameObject:
             "_mesh_key",
             "_mesh_cache",
             "_texture_image",
+            "_started",  # Script lifecycle state - should always start fresh
+            "_awoken",   # Script lifecycle state - should always start fresh
         }
 
         is_object3d = module_name in {"src.engine3d.object3d", "engine3d.engine3d.object3d"} and class_name == "Object3D"
@@ -383,6 +386,15 @@ class GameObject:
 
     @staticmethod
     def _serialize_value(value: Any, source_go_id: str = None, source_comp_idx: int = 0) -> Any:
+        # Handle Enum members
+        if isinstance(value, Enum):
+            return {
+                "__type__": "enum",
+                "enum_class": f"{value.__class__.__module__}.{value.__class__.__name__}",
+                "name": value.name,
+                "value": value.value,
+            }
+        
         # Handle GameObject references
         if isinstance(value, GameObject):
             return {
@@ -562,6 +574,27 @@ class GameObject:
                     return go.components[comp_idx]
                 return None
             
+            # Handle Enum members
+            if value.get("__type__") == "enum":
+                enum_class_path = value.get("enum_class", "")
+                enum_name = value.get("name")
+                enum_value = value.get("value")
+                
+                try:
+                    # Parse the class path (module.ClassName)
+                    if '.' in enum_class_path:
+                        module_name, class_name = enum_class_path.rsplit('.', 1)
+                        module = importlib.import_module(module_name)
+                        enum_cls = getattr(module, class_name, None)
+                        if enum_cls and issubclass(enum_cls, Enum):
+                            # Return the enum member by value
+                            return enum_cls(enum_value)
+                except Exception:
+                    pass
+                
+                # Fallback: return the raw value if we can't reconstruct the enum
+                return enum_value
+            
             if value.get("__type__") == "ndarray":
                 return np.array(value.get("value", []), dtype=value.get("dtype", None))
             if value.get("__type__") == "Vector3":
@@ -654,7 +687,6 @@ class GameObject:
                     # Parse the class path (module.ClassName)
                     if '.' in serializable_class_name:
                         module_name, class_name = serializable_class_name.rsplit('.', 1)
-                        import importlib
                         module = importlib.import_module(module_name)
                         serializable_cls = getattr(module, class_name, None)
                     else:

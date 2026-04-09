@@ -3497,7 +3497,7 @@ class {class_name}(Script):
                 # Restore prefab connections
                 self._restore_prefab_connections()
                 
-                self._window.show_scene(self._scene)
+                self._window.show_scene(self._scene, start_scripts=False)  # Don't start scripts when restoring
                 self._stop_all_particle_systems()
                 
                 self._refresh_hierarchy()
@@ -3706,7 +3706,7 @@ class {class_name}(Script):
         # Initialize ScriptableObject assets
         self._init_scriptable_objects()
         
-        self._window.show_scene(self._scene)
+        self._window.show_scene(self._scene, start_scripts=False)  # Don't start scripts in edit mode
         self._stop_all_particle_systems()
 
         self._viewport.resized.connect(self._on_viewport_resized)
@@ -3782,7 +3782,7 @@ class {class_name}(Script):
             
             # Show the loaded scene
             if self._window:
-                self._window.show_scene(self._scene)
+                self._window.show_scene(self._scene, start_scripts=False)  # Don't start scripts in edit mode
             self._stop_all_particle_systems()
             
             self._refresh_hierarchy()
@@ -6842,14 +6842,18 @@ class {class_name}(Script):
 
     def _create_enum_field(self, comp, field_name: str, field_info, current_value) -> QtWidgets.QComboBox:
         """Create a combo box for an enum field."""
+        from enum import Enum
         combo = QtWidgets.QComboBox()
         
         if field_info.enum_options:
             for value, label in field_info.enum_options:
                 combo.addItem(label, value)
             
-            # Set current value
+            # Set current value - handle both Enum members and raw values
             if current_value is not None:
+                # If current_value is an Enum member, extract its value
+                if isinstance(current_value, Enum):
+                    current_value = current_value.value
                 index = combo.findData(current_value)
                 if index >= 0:
                     combo.setCurrentIndex(index)
