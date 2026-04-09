@@ -561,6 +561,13 @@ class Component:
             return self.game_object.transform
         return None
 
+    @property
+    def scene(self):
+        """Get the scene this component's GameObject belongs to."""
+        if self.game_object:
+            return self.game_object.scene
+        return None
+
     def add_component(self, component: "Component") -> "Component":
         if not self.game_object:
             raise AttributeError("Current component must contain 'game_object' before adding a new component!")

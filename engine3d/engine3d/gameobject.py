@@ -38,10 +38,18 @@ class GameObject:
         self._active_coroutines: List[Dict[str, Any]] = []
         self._end_of_frame_coroutines: List[Dict[str, Any]] = []
         
+        # Reference to the scene this object belongs to
+        self._scene: Optional['Scene3D'] = None
+        
         # Render layer for selective camera rendering
         # Import here to avoid circular imports at module level
         from engine3d.engine3d.camera import RenderLayer
         self._render_layer: RenderLayer = RenderLayer.DEFAULT
+    
+    @property
+    def scene(self) -> Optional['Scene3D']:
+        """Get the scene this GameObject belongs to."""
+        return self._scene
     
     @property
     def render_layer(self):
