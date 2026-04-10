@@ -73,6 +73,11 @@ class Input:
         return cls._mouse_position
 
     @classmethod
+    def get_mouse_delta(cls) -> Tuple[int, int]:
+        """The mouse movement delta since last frame."""
+        return cls._mouse_delta
+
+    @classmethod
     def get_mouse_scroll_delta(cls) -> Tuple[int, int]:
         """The current mouse scroll delta."""
         return cls._mouse_scroll
