@@ -1,10 +1,10 @@
 """Graphics utilities and types."""
 # Re-export from types module for backward compatibility
 from .material import LitMaterial, UnlitMaterial, EmissiveMaterial, SpecularMaterial, TransparentMaterial, Material
-from .shadow import ShadowMap, ShadowSettings, calculate_light_space_matrix
+from .shadow import ShadowMap, calculate_light_space_matrix
 
 __all__ = [
     "LitMaterial", "UnlitMaterial", "EmissiveMaterial", "SpecularMaterial", 
     "TransparentMaterial", "Material",
-    "ShadowMap", "ShadowSettings", "calculate_light_space_matrix"
+    "ShadowMap", "calculate_light_space_matrix"
 ]

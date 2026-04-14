@@ -191,10 +191,12 @@ class Window3D:
     uniform sampler2DShadow shadow_map;
     uniform bool shadows_enabled;
     uniform float shadow_bias;
+    uniform float normal_bias;
+    uniform bool receive_shadows;
     
     out vec4 frag_color;
     
-    float calculate_shadow(vec4 light_space_pos) {
+    float calculate_shadow(vec4 light_space_pos, vec3 normal, vec3 light_dir) {
         // Perspective divide (not needed for orthographic, but keeps it general)
         vec3 proj_coords = light_space_pos.xyz / light_space_pos.w;
         // Transform to [0,1] range
@@ -210,13 +212,16 @@ class Window3D:
             return 0.0;
         }
         
+        // Normal bias for realistic shadows (slope-scale to reduce acne/peter-panning)
+        float bias = shadow_bias + normal_bias * (1.0 - max(dot(normal, light_dir), 0.0));
+        
         // PCF (Percentage Closer Filtering) for softer shadows
         float shadow = 0.0;
         vec2 texel_size = 1.0 / vec2(textureSize(shadow_map, 0));
         for (int x = -1; x <= 1; ++x) {
             for (int y = -1; y <= 1; ++y) {
                 vec2 sample_coords = proj_coords.xy + vec2(x, y) * texel_size;
-                float pcf_depth = texture(shadow_map, vec3(sample_coords, current_depth - shadow_bias));
+                float pcf_depth = texture(shadow_map, vec3(sample_coords, current_depth - bias));
                 shadow += pcf_depth;
             }
         }
@@ -246,14 +251,15 @@ class Window3D:
             result_color = albedo.rgb * emissive_intensity;
         }
         else { // Lit or Specular
-            // Calculate shadow factor
-            float shadow = 0.0;
-            if (shadows_enabled) {
-                shadow = calculate_shadow(frag_light_space_pos);
-            }
-            
             // Directional light
             vec3 dir_light_dir = normalize(-light_dir);
+            
+            // Calculate shadow factor (only if receiving and enabled)
+            float shadow = 0.0;
+            if (shadows_enabled && receive_shadows) {
+                shadow = calculate_shadow(frag_light_space_pos, normal, dir_light_dir);
+            }
+            
             float dir_diffuse = max(dot(normal, dir_light_dir), 0.0);
             // Apply shadow to directional light only (reduce diffuse by shadow amount)
             vec3 diffuse_light = light_color * (ambient + dir_diffuse * (1.0 - ambient) * (1.0 - shadow));
@@ -1797,20 +1803,16 @@ class Window3D:
         """
         Calculate the light space matrix for shadow rendering.
         
-        This creates an orthographic projection from the light's perspective
-        that encompasses the visible area from the camera.
+        Uses fixed world center for stable shadows (no swimming with camera).
+        Good quality at all resolutions when using reasonable shadow_distance.
         """
         # Get light direction (normalized, pointing FROM light)
         light_dir = np.array(light.direction, dtype=np.float32)
         light_dir = light_dir / (np.linalg.norm(light_dir) + 1e-6)
         
-        # Get camera position and forward direction
-        cam_pos = np.array(camera.position, dtype=np.float32)
-        cam_forward = np.array(camera.forward, dtype=np.float32)
-        
-        # Calculate scene center (in front of camera)
+        # Fixed world center for stable shadows (independent of camera)
         shadow_dist = light.shadow_distance
-        scene_center = cam_pos - cam_forward * (shadow_dist * 0.5)
+        scene_center = np.array([0.0, 0.0, 0.0])
         
         # Position the light above the scene
         light_pos = scene_center - light_dir * shadow_dist
@@ -1833,8 +1835,8 @@ class Window3D:
         view[1, 3] = -np.dot(up, light_pos)
         view[2, 3] = -np.dot(forward, light_pos)
         
-        # Orthographic projection
-        ortho_size = shadow_dist * 0.7  # Adjust to encompass visible area
+        # Orthographic projection (generous size to cover scene)
+        ortho_size = shadow_dist * 0.8
         near = 0.1
         far = shadow_dist * 2.0
         
@@ -2136,6 +2138,12 @@ class Window3D:
             
             if 'shadow_bias' in program:
                 program['shadow_bias'].value = light.shadow_bias if light else 0.001
+            
+            if 'normal_bias' in program:
+                program['normal_bias'].value = light.normal_bias if light else 0.002
+            
+            if 'receive_shadows' in program:
+                program['receive_shadows'].value = True  # default; per-object override in draw
 
         # Bind shadow map texture
         if shadows_active and self._shadow_map is not None:
@@ -2232,6 +2240,10 @@ class Window3D:
 
                 rgba = tuple(mat.color_vec4)
                 self._program['base_color'].value = rgba
+
+                # Per-object receive_shadows support for realistic per-mesh control
+                if 'receive_shadows' in self._program:
+                    self._program['receive_shadows'].value = getattr(obj3d, 'receive_shadows', True)
 
                 if mesh is not None:
                     vao = mesh.vao

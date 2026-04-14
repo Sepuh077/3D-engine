@@ -52,15 +52,17 @@ class DirectionalLight3D(Light3D):
     shadow_resolution = InspectorField(int, default=1024, tooltip="Shadow map resolution")
     shadow_distance = InspectorField(float, default=50.0, min_value=1.0, max_value=500.0, step=1.0, decimals=1, tooltip="Maximum shadow distance")
     shadow_bias = InspectorField(float, default=0.001, min_value=0.0, max_value=0.1, step=0.0001, decimals=4, tooltip="Shadow depth bias to prevent acne")
+    normal_bias = InspectorField(float, default=0.002, min_value=0.0, max_value=0.1, step=0.0001, decimals=4, tooltip="Normal bias to reduce acne while minimizing peter-panning for realistic shadows")
 
     def __init__(self, 
                  color: ColorType = (1.0, 1.0, 1.0),
                  intensity: float = 1.0,
                  ambient: float = 0.2,
                  cast_shadows: bool = True,
-                 shadow_resolution: int = 1024,
+                 shadow_resolution: int = 4096,
                  shadow_distance: float = 50.0,
-                 shadow_bias: float = 0.001):
+                 shadow_bias: float = 0.001,
+                 normal_bias: float = 0.002):
         """
         Initialize directional light.
         
@@ -72,6 +74,7 @@ class DirectionalLight3D(Light3D):
             shadow_resolution: Shadow map resolution (512, 1024, 2048, 4096)
             shadow_distance: Maximum distance for shadow rendering
             shadow_bias: Depth bias to prevent shadow acne
+            normal_bias: Normal-based bias for realistic shadows (reduces acne/peter-panning)
         """
         super().__init__(color, intensity)
         self._fallback_direction = Vector3(0.3, -0.7, -0.5).normalized
@@ -82,6 +85,7 @@ class DirectionalLight3D(Light3D):
         self.shadow_resolution = shadow_resolution
         self.shadow_distance = shadow_distance
         self.shadow_bias = shadow_bias
+        self.normal_bias = normal_bias
     
     def _normalize_fallback_direction(self):
         """Normalize the fallback direction vector."""

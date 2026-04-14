@@ -39,8 +39,9 @@ class ShadowMap:
         # Create framebuffer with depth attachment only
         self.framebuffer = ctx.framebuffer(depth_attachment=self.depth_texture)
         
-        # Store previous viewport for restoration
+        # Store previous viewport/FBO for restoration (supports editor custom FBO)
         self._prev_viewport = None
+        self._prev_fbo = None
     
     def begin(self):
         """
@@ -49,23 +50,26 @@ class ShadowMap:
         Call this before rendering objects to the shadow map.
         """
         self._prev_viewport = self.ctx.viewport
+        self._prev_fbo = self.ctx.detect_framebuffer()
         self.framebuffer.use()
         self.ctx.viewport = (0, 0, self.resolution, self.resolution)
         
         # Clear depth buffer
         self.ctx.clear(depth=1.0)
         
-        # Disable color writes (depth-only pass)
-        self.ctx.depth_mask = True
+        # depth writes enabled by default for depth fb
     
     def end(self):
         """
-        End shadow pass - restore default framebuffer and viewport.
+        End shadow pass - restore previous framebuffer (editor custom FBO) and viewport.
         
         Call this after rendering all shadow casters.
         """
-        # Unbind framebuffer (return to default framebuffer)
-        self.ctx.screen.use()
+        # Restore previous FBO (critical for editor embedding, not just screen)
+        if self._prev_fbo:
+            self._prev_fbo.use()
+        else:
+            self.ctx.screen.use()
         
         # Restore viewport
         if self._prev_viewport:
@@ -90,37 +94,6 @@ class ShadowMap:
             self.framebuffer = None
 
 
-class ShadowSettings:
-    """
-    Settings for shadow rendering on a light.
-    
-    This class holds all shadow-related configuration that can be
-    attached to a DirectionalLight3D.
-    """
-    
-    def __init__(
-        self,
-        enabled: bool = True,
-        resolution: int = 1024,
-        distance: float = 50.0,
-        bias: float = 0.001,
-        normal_bias: float = 0.0,
-    ):
-        """
-        Initialize shadow settings.
-        
-        Args:
-            enabled: Whether shadows are enabled
-            resolution: Shadow map resolution (512, 1024, 2048, 4096)
-            distance: Maximum distance from camera to render shadows
-            bias: Depth bias to prevent shadow acne
-            normal_bias: Normal-based bias for additional acne prevention
-        """
-        self.enabled = enabled
-        self.resolution = resolution
-        self.distance = distance
-        self.bias = bias
-        self.normal_bias = normal_bias
 
 
 def calculate_light_space_matrix(
@@ -133,7 +106,7 @@ def calculate_light_space_matrix(
     Calculate the light space matrix (projection * view) for shadow rendering.
     
     For directional lights, this uses an orthographic projection that encompasses
-    the visible scene area.
+    the visible scene area. Uses centered ortho for stability.
     
     Args:
         light_direction: Normalized direction vector pointing FROM the light
@@ -175,9 +148,8 @@ def calculate_light_space_matrix(
     view[1, 3] = -np.dot(up, light_pos)
     view[2, 3] = -np.dot(forward, light_pos)
     
-    # Orthographic projection for directional light
-    # Size based on scene radius and shadow distance
-    ortho_size = max(scene_radius, shadow_distance * 0.5)
+    # Orthographic projection for directional light - centered and stable
+    ortho_size = max(scene_radius, shadow_distance * 0.6)
     
     left = -ortho_size
     right = ortho_size

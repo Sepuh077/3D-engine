@@ -8108,6 +8108,12 @@ class {class_name}(Script):
         layout.addRow("Shadow Bias", shadow_bias)
         box._shadow_bias_field = shadow_bias
         
+        normal_bias = self._make_spinbox(0.0, 0.1, step=0.0001, decimals=4)
+        normal_bias.setValue(float(getattr(light, 'normal_bias', 0.002)))
+        normal_bias.valueChanged.connect(lambda value, l=light: setattr(l, 'normal_bias', value))
+        layout.addRow("Normal Bias", normal_bias)
+        box._normal_bias_field = normal_bias
+        
         return box
 
     def _create_point_light_fields(self, light) -> QtWidgets.QGroupBox:
