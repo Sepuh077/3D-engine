@@ -11,7 +11,7 @@ import time
 from engine3d.engine3d.gameobject import GameObject
 from engine3d.engine3d.object3d import Object3D
 from engine3d.engine3d.camera import Camera3D
-from engine3d.engine3d.light import DirectionalLight3D
+from engine3d.engine3d.light import DirectionalLight3D, PointLight3D, Light3D
 from engine3d.types import Color, ColorType
 from engine3d.engine3d.ui.manager import UIManager
 
@@ -255,6 +255,56 @@ class Scene3D:
             if l:
                 return l
         return None
+    
+    def get_shadow_casting_lights(self) -> List[Light3D]:
+        """
+        Get all lights that cast shadows.
+        
+        Returns directional lights first, then point lights.
+        Limited to MAX_SHADOW_LIGHTS (4) for performance.
+        
+        Returns:
+            List of Light3D objects with cast_shadows=True
+        """
+        from engine3d.engine3d.graphics.shadow import MAX_SHADOW_LIGHTS
+        
+        lights = []
+        
+        # First, get directional lights (they're cheaper to render)
+        for obj in self.objects:
+            dl = obj.get_component(DirectionalLight3D)
+            if dl and getattr(dl, 'cast_shadows', False):
+                lights.append(dl)
+                if len(lights) >= MAX_SHADOW_LIGHTS:
+                    return lights
+        
+        # Then, get point lights
+        for obj in self.objects:
+            pl = obj.get_component(PointLight3D)
+            if pl and getattr(pl, 'cast_shadows', False):
+                lights.append(pl)
+                if len(lights) >= MAX_SHADOW_LIGHTS:
+                    return lights
+        
+        return lights
+    
+    def get_all_directional_lights(self) -> List[DirectionalLight3D]:
+        """Get all directional lights in the scene."""
+        lights = []
+        for obj in self.objects:
+            dl = obj.get_component(DirectionalLight3D)
+            if dl:
+                lights.append(dl)
+        return lights
+    
+    def get_all_point_lights(self) -> List[PointLight3D]:
+        """Get all point lights in the scene."""
+        lights = []
+        for obj in self.objects:
+            pl = obj.get_component(PointLight3D)
+            if pl:
+                lights.append(pl)
+        return lights
     
     def _attach_window(self, window: 'Window3D'):
         """Called when scene is attached to a window."""
