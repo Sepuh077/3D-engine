@@ -6,10 +6,8 @@ from the light's perspective.
 Also supports omnidirectional shadow mapping for point lights using cubemap depth textures.
 """
 import numpy as np
+import moderngl
 from typing import Optional, List, Tuple, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    import moderngl
 
 
 # Maximum number of shadow-casting lights supported
@@ -230,6 +228,9 @@ class OmnidirectionalShadowMap:
         for _ in range(6):
             depth_tex = ctx.depth_texture((resolution, resolution))
             depth_tex.compare_func = '<='
+            depth_tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
+            depth_tex.repeat_x = False
+            depth_tex.repeat_y = False
             self.depth_textures.append(depth_tex)
             self.framebuffers.append(ctx.framebuffer(depth_attachment=depth_tex))
         
