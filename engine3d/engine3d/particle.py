@@ -220,6 +220,8 @@ class ParticleSystem(Component):
     loop = InspectorField(bool, default=True, tooltip="Loop the particle system")
     max_particles = InspectorField(int, default=100, min_value=1, max_value=1000, tooltip="Maximum number of particles")
     gravity_scale = InspectorField(float, default=1.0, min_value=-10.0, max_value=10.0, tooltip="Gravity multiplier (0 = no gravity)")
+    cast_shadows = InspectorField(bool, default=False, tooltip="Whether particles cast shadows")
+    receive_shadows = InspectorField(bool, default=False, tooltip="Whether particles receive shadows")
 
     def __init__(
         self,
@@ -241,6 +243,8 @@ class ParticleSystem(Component):
         collider=None,  # Collider type - use lazy import to avoid circular dependency
         shape: Optional[ParticleShape] = None,
         is_local: bool = True,
+        cast_shadows: bool = False,
+        receive_shadows: bool = False,
     ):
         super().__init__()
         self._position = Vector3(position)
@@ -261,6 +265,8 @@ class ParticleSystem(Component):
         self.gravity_scale = float(gravity_scale)
         self.collider = collider
         self.shape = shape or SphereShape()
+        self.cast_shadows = cast_shadows
+        self.receive_shadows = receive_shadows
 
         self._particles: List[Particle] = []
         self._container = None
@@ -338,10 +344,12 @@ class ParticleSystem(Component):
             raise ValueError("Unsupported particle_object type")
 
         obj.transform.scale = self.size
-        if self.color is not None:
-            obj3d = obj.get_component(Object3D)
-            if obj3d:
+        obj3d = obj.get_component(Object3D)
+        if obj3d:
+            if self.color is not None:
                 obj3d.color = self.color
+            obj3d.cast_shadows = self.cast_shadows
+            obj3d.receive_shadows = self.receive_shadows
         return obj
 
     def _clone_object(self, template: GameObject) -> GameObject:
@@ -528,7 +536,7 @@ class ParticleSystem(Component):
     def _normalize_velocity(self, velocity: Vector3) -> Vector3:
         norm = velocity.magnitude
         if norm < 1e-6:
-            return Vector3.up()
+            return velocity  # preserve zero vector rather than snapping to up
         return velocity / norm
 
     def _move_with_collisions(self, particle: Particle, target_pos: Vector3) -> None:

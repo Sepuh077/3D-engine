@@ -615,8 +615,10 @@ class ScriptableObject(metaclass=ScriptableObjectMeta):
         
         # Find all .py files
         for py_file in directory.rglob("*.py"):
-            # Skip hidden directories and __pycache__
-            if any(part.startswith('.') or part == '__pycache__' for part in py_file.parts):
+            # Skip hidden directories, __pycache__, and virtual environments
+            _skip = ('.', '__pycache__', 'venv', '.venv', 'env', '.env',
+                     'node_modules', 'site-packages', '.git')
+            if any(part.startswith('.') or part in _skip for part in py_file.parts):
                 continue
             
             # Skip src directory (engine code - already imported)
@@ -625,7 +627,7 @@ class ScriptableObject(metaclass=ScriptableObjectMeta):
             
             try:
                 # Read the file to check for ScriptableObject subclasses
-                content = py_file.read_text(encoding='utf-8')
+                content = py_file.read_text(encoding='utf-8', errors='replace')
                 
                 # Look for ScriptableObject subclass definitions
                 pattern = r'class\s+(\w+)\s*\(\s*ScriptableObject\s*\)'

@@ -20,6 +20,8 @@ class Object3D(Component):
         self,
         filename: Optional[str] = None,
         color: Optional[ColorType] = None,
+        cast_shadows: bool = True,
+        receive_shadows: bool = True,
     ):
         super().__init__()
         # ---------------- Geometry ----------------
@@ -50,6 +52,10 @@ class Object3D(Component):
         self._color = c
         self._visible = True
         self.material: Material = LitMaterial(color=c)
+        
+        # Shadow properties
+        self.cast_shadows = cast_shadows
+        self.receive_shadows = receive_shadows
 
         # GPU handles (initialized later)
         self._vbo = None
@@ -217,45 +223,42 @@ class Object3D(Component):
 
         img = img_arr.astype(np.float32) / 255.0
         h, w = img.shape[:2]
+        channels = img.shape[2] if img.ndim == 3 else 1
 
-        def sample_color(u, v):
-            u = u % 1.0
-            v = v % 1.0
-            x = np.clip(int(u * (w - 1)), 0, w - 1)
-            y = np.clip(int((1 - v) * (h - 1)), 0, h - 1)
-            c = img[y, x]
-            if c.shape[0] == 3:
-                c = np.append(c, 1.0)
-            # Force alpha to 1.0 to prevent invisible vertices from texture alpha
-            c[3] = 1.0
-            return c
+        def _sample_batch(uv_coords: np.ndarray) -> np.ndarray:
+            """Vectorised texture lookup for an (N, 2) UV array -> (N, 4) RGBA."""
+            us = uv_coords[:, 0] % 1.0
+            vs = uv_coords[:, 1] % 1.0
+            xs = np.clip((us * (w - 1)).astype(int), 0, w - 1)
+            ys = np.clip(((1 - vs) * (h - 1)).astype(int), 0, h - 1)
+            sampled = img[ys, xs]  # (N, channels)
+            if channels == 3:
+                rgba = np.ones((len(sampled), 4), dtype=np.float32)
+                rgba[:, :3] = sampled
+            else:
+                rgba = sampled.copy()
+                rgba[:, 3] = 1.0  # force alpha to 1.0
+            return rgba
 
         num_uv = len(uv)
         num_vertices = len(mesh.vertices)
         num_faces = len(mesh.faces)
 
-        v_colors = np.zeros((num_vertices, 4), dtype=np.float32)
-        counts = np.zeros(num_vertices, dtype=np.int32)
-
         if num_uv == num_vertices:
-            for vert_idx in range(num_vertices):
-                u, v = uv[vert_idx]
-                v_colors[vert_idx] = sample_color(u, v)
+            v_colors = _sample_batch(uv)
         elif num_uv == num_faces * 3:
-            for face_idx, face in enumerate(mesh.faces):
-                for corner in range(3):
-                    vert_idx = face[corner]
-                    uv_idx = face_idx * 3 + corner
-                    u, v = uv[uv_idx]
-                    v_colors[vert_idx] += sample_color(u, v)
-                    counts[vert_idx] += 1
-            for i in range(num_vertices):
-                if counts[i] > 0:
-                    v_colors[i] /= counts[i]
-                else:
-                    v_colors[i] = [1, 1, 1, 1]
+            face_arr = np.asarray(mesh.faces, dtype=np.intp)  # (F, 3)
+            uv_indices = np.arange(num_faces * 3)
+            vert_indices = face_arr.ravel()  # (F*3,)
+            sampled = _sample_batch(uv[uv_indices])  # (F*3, 4)
+            v_colors = np.zeros((num_vertices, 4), dtype=np.float32)
+            counts = np.zeros(num_vertices, dtype=np.float32)
+            np.add.at(v_colors, vert_indices, sampled)
+            np.add.at(counts, vert_indices, 1.0)
+            mask = counts > 0
+            v_colors[mask] /= counts[mask, np.newaxis]
+            v_colors[~mask] = [1, 1, 1, 1]
         else:
-            # UV count doesn't match expected layout, use default white
             v_colors = np.ones((num_vertices, 4), dtype=np.float32)
 
         mesh.visual.vertex_colors = v_colors
@@ -417,8 +420,8 @@ class Object3D(Component):
         self._gpu_initialized = False
 
     def _rotation_matrix(self):
-        cx, cy, cz = np.cos(self.game_object.transform._rotation)
-        sx, sy, sz = np.sin(self.game_object.transform._rotation)
+        cx, cy, cz = np.cos(self.game_object.transform._local_rotation)
+        sx, sy, sz = np.sin(self.game_object.transform._local_rotation)
 
         Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]], dtype=np.float32)
         Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]], dtype=np.float32)
@@ -427,8 +430,6 @@ class Object3D(Component):
 
     def __repr__(self):
         return f"Object3D(mesh={self._mesh_key})"
-
-        return f"Object3D(name='{hash(self)}', position={self.game_object.transform.position}, scale={self.game_object.transform.scale})"
 
 
 

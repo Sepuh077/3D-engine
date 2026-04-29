@@ -8081,6 +8081,39 @@ class {class_name}(Script):
         ambient.valueChanged.connect(lambda value, l=light: self._on_directional_light_ambient_changed(l, value))
         layout.addRow("Ambient", ambient)
         box._ambient_field = ambient
+        
+        # Shadow fields
+        cast_shadows = QtWidgets.QCheckBox()
+        cast_shadows.setChecked(bool(getattr(light, 'cast_shadows', True)))
+        cast_shadows.stateChanged.connect(lambda state, l=light: setattr(l, 'cast_shadows', state == 2))
+        layout.addRow("Cast Shadows", cast_shadows)
+        box._cast_shadows_field = cast_shadows
+        
+        shadow_res = QtWidgets.QComboBox()
+        shadow_res.addItems(["512", "1024", "2048", "4096"])
+        shadow_res.setCurrentText(str(getattr(light, 'shadow_resolution', 1024)))
+        shadow_res.currentTextChanged.connect(lambda text, l=light: setattr(l, 'shadow_resolution', int(text)))
+        layout.addRow("Shadow Resolution", shadow_res)
+        box._shadow_res_field = shadow_res
+        
+        shadow_dist = self._make_spinbox(1.0, 500.0, step=1.0, decimals=1)
+        shadow_dist.setValue(float(getattr(light, 'shadow_distance', 50.0)))
+        shadow_dist.valueChanged.connect(lambda value, l=light: setattr(l, 'shadow_distance', value))
+        layout.addRow("Shadow Distance", shadow_dist)
+        box._shadow_dist_field = shadow_dist
+        
+        shadow_bias = self._make_spinbox(0.0, 0.1, step=0.0001, decimals=4)
+        shadow_bias.setValue(float(getattr(light, 'shadow_bias', 0.001)))
+        shadow_bias.valueChanged.connect(lambda value, l=light: setattr(l, 'shadow_bias', value))
+        layout.addRow("Shadow Bias", shadow_bias)
+        box._shadow_bias_field = shadow_bias
+        
+        normal_bias = self._make_spinbox(0.0, 0.1, step=0.0001, decimals=4)
+        normal_bias.setValue(float(getattr(light, 'normal_bias', 0.002)))
+        normal_bias.valueChanged.connect(lambda value, l=light: setattr(l, 'normal_bias', value))
+        layout.addRow("Normal Bias", normal_bias)
+        box._normal_bias_field = normal_bias
+        
         return box
 
     def _create_point_light_fields(self, light) -> QtWidgets.QGroupBox:

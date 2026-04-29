@@ -83,8 +83,17 @@ class BuildSystem:
                 if '=' in line and not line.startswith('#'):
                     key, value = line.split('=', 1)
                     key = key.strip()
-                    value = value.strip().strip('"').strip("'")
-                    config[key] = value
+                    value = value.strip()
+                    # Parse TOML lists: ["a", "b", "c"]
+                    if value.startswith('[') and value.endswith(']'):
+                        inner = value[1:-1]
+                        config[key] = [
+                            item.strip().strip('"').strip("'")
+                            for item in inner.split(',')
+                            if item.strip()
+                        ]
+                    else:
+                        config[key] = value.strip('"').strip("'")
         
         return config
     

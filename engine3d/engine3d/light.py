@@ -46,11 +46,23 @@ class DirectionalLight3D(Light3D):
     
     # Additional inspector fields for directional light
     ambient = InspectorField(float, default=0.2, min_value=0.0, max_value=1.0, step=0.05, decimals=2, tooltip="Ambient light level (0-1)")
+    
+    # Shadow properties
+    cast_shadows = InspectorField(bool, default=True, tooltip="Enable shadow casting")
+    shadow_resolution = InspectorField(int, default=1024, tooltip="Shadow map resolution")
+    shadow_distance = InspectorField(float, default=50.0, min_value=1.0, max_value=500.0, step=1.0, decimals=1, tooltip="Maximum shadow distance")
+    shadow_bias = InspectorField(float, default=0.001, min_value=0.0, max_value=0.1, step=0.0001, decimals=4, tooltip="Shadow depth bias to prevent acne")
+    normal_bias = InspectorField(float, default=0.002, min_value=0.0, max_value=0.1, step=0.0001, decimals=4, tooltip="Normal bias to reduce acne while minimizing peter-panning for realistic shadows")
 
     def __init__(self, 
                  color: ColorType = (1.0, 1.0, 1.0),
                  intensity: float = 1.0,
-                 ambient: float = 0.2):
+                 ambient: float = 0.2,
+                 cast_shadows: bool = True,
+                 shadow_resolution: int = 4096,
+                 shadow_distance: float = 50.0,
+                 shadow_bias: float = 0.001,
+                 normal_bias: float = 0.002):
         """
         Initialize directional light.
         
@@ -58,12 +70,22 @@ class DirectionalLight3D(Light3D):
             color: Light color (RGB 0-1)
             intensity: Light intensity multiplier
             ambient: Ambient light level (0-1)
+            cast_shadows: Whether this light casts shadows
+            shadow_resolution: Shadow map resolution (512, 1024, 2048, 4096)
+            shadow_distance: Maximum distance for shadow rendering
+            shadow_bias: Depth bias to prevent shadow acne
+            normal_bias: Normal-based bias for realistic shadows (reduces acne/peter-panning)
         """
         super().__init__(color, intensity)
         self._fallback_direction = Vector3(0.3, -0.7, -0.5).normalized
         self._normalize_fallback_direction()
         
         self.ambient = ambient
+        self.cast_shadows = cast_shadows
+        self.shadow_resolution = shadow_resolution
+        self.shadow_distance = shadow_distance
+        self.shadow_bias = shadow_bias
+        self.normal_bias = normal_bias
     
     def _normalize_fallback_direction(self):
         """Normalize the fallback direction vector."""
@@ -108,10 +130,22 @@ class PointLight3D(Light3D):
     # Additional inspector fields for point light
     range = InspectorField(float, default=50.0, min_value=0.1, max_value=1000.0, step=0.5, decimals=2, tooltip="Maximum light range")
 
+    # Shadow properties
+    cast_shadows = InspectorField(bool, default=True, tooltip="Enable shadow casting")
+    shadow_resolution = InspectorField(int, default=512, tooltip="Shadow cubemap resolution per face")
+    shadow_bias = InspectorField(float, default=0.001, min_value=0.0, max_value=0.1, step=0.0001, decimals=4, tooltip="Shadow depth bias to prevent acne")
+    shadow_near = InspectorField(float, default=0.1, min_value=0.01, max_value=10.0, step=0.1, decimals=2, tooltip="Near plane for shadow frustum")
+    shadow_far = InspectorField(float, default=50.0, min_value=1.0, max_value=500.0, step=1.0, decimals=1, tooltip="Far plane for shadow frustum")
+
     def __init__(self,
                  color: ColorType = (1.0, 1.0, 1.0),
                  intensity: float = 1.0,
-                 range: float = 50.0):
+                 range: float = 50.0,
+                 cast_shadows: bool = True,
+                 shadow_resolution: int = 512,
+                 shadow_bias: float = 0.001,
+                 shadow_near: float = 0.1,
+                 shadow_far: float = 50.0):
         """
         Initialize point light.
         
@@ -119,10 +153,20 @@ class PointLight3D(Light3D):
             color: Light color (RGB 0-1)  
             intensity: Light intensity
             range: Maximum light range
+            cast_shadows: Whether this light casts shadows
+            shadow_resolution: Shadow cubemap resolution per face
+            shadow_bias: Depth bias to prevent shadow acne
+            shadow_near: Near plane for shadow frustum
+            shadow_far: Far plane for shadow frustum
         """
         super().__init__(color, intensity)
         self._fallback_position = Vector3(0, 10, 0)
         self.range = range
+        self.cast_shadows = cast_shadows
+        self.shadow_resolution = shadow_resolution
+        self.shadow_bias = shadow_bias
+        self.shadow_near = shadow_near
+        self.shadow_far = shadow_far
     
     @property
     def position(self) -> Vector3:
