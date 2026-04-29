@@ -28,6 +28,7 @@ class Transform(Component):
         self._world_scale = Vector3.one()
 
         self._transform_dirty = True
+        self._world_dirty = True
         self._cached_model = None
         self._cached_rotation = None
         self._prev_position = Vector3(self._local_position)
@@ -38,6 +39,7 @@ class Transform(Component):
 
     def _mark_dirty(self):
         self._transform_dirty = True
+        self._world_dirty = True
         # Mark all children as dirty too
         for child in self._children:
             child._mark_dirty()
@@ -135,6 +137,8 @@ class Transform(Component):
     
     def _compute_world_transform(self):
         """Compute world position, rotation, and scale from parent."""
+        if not self._world_dirty:
+            return
         if self._parent is None:
             self._world_position = Vector3(self._local_position)
             self._world_rotation = self._local_rotation.copy()
@@ -166,6 +170,7 @@ class Transform(Component):
             scaled_local = self._local_position.to_numpy() * parent._world_scale.to_numpy()
             rotated_local = scaled_local @ R
             self._world_position = parent._world_position + rotated_local
+        self._world_dirty = False
     
     @property
     def world_position(self) -> Vector3:

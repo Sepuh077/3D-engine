@@ -3226,13 +3226,28 @@ class Window3D:
     
     def _cleanup(self):
         """Release all resources."""
-        # Release GPU resources
+        # Release GPU resources for objects
         for obj in self.objects:
-            if obj.get_component(Object3D): obj.get_component(Object3D)._release_gpu()
+            obj3d = obj.get_component(Object3D)
+            if obj3d:
+                obj3d._release_gpu()
         
         if self._current_scene:
             for obj in self._current_scene.objects:
-                if obj.get_component(Object3D): obj.get_component(Object3D)._release_gpu()
+                obj3d = obj.get_component(Object3D)
+                if obj3d:
+                    obj3d._release_gpu()
+        
+        # Release shadow maps
+        for sm in getattr(self, '_shadow_maps', {}).values():
+            sm.release()
+        for sm in getattr(self, '_point_shadow_maps', {}).values():
+            sm.release()
+        if getattr(self, '_dummy_shadow_texture', None):
+            self._dummy_shadow_texture.release()
+            self._dummy_shadow_texture = None
+        # _dummy_shadow_cubemap shares the texture with _dummy_shadow_texture
+        self._dummy_shadow_cubemap = None
         
         # Release 2D overlay resources
         if hasattr(self, '_2d_texture'):

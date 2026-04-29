@@ -248,8 +248,10 @@ class Camera3D(Component):
         self.near = near
         self.far = far
         self.priority = priority
-        self.clear_flags = clear_flags  # None -> descriptor default
-        self.background_color = background_color  # None -> descriptor default
+        if clear_flags is not None:
+            self.clear_flags = clear_flags
+        if background_color is not None:
+            self.background_color = background_color
         self.render_mask = RenderLayer.ALL  # Fixed default, not a constructor param
         
         # Multi-camera support

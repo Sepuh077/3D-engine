@@ -1,4 +1,4 @@
-from typing import Optional, TYPE_CHECKING, Generator, Type, TypeVar, List, Any, Generic, Tuple, Union, overload, Set
+from typing import Optional, TYPE_CHECKING, Generator, Type, TypeVar, List, Any, Generic, Tuple, Union, overload, Set, Dict
 from dataclasses import dataclass
 from enum import Enum
 
@@ -41,8 +41,8 @@ class Tag:
         players = GameObject.get_all_by_tag(scene, "Player")
     """
     
-    # Registry of all known tags (for auto-completion and validation)
-    _registry: Set[str] = set()
+    # Registry of all known tags (name -> Tag instance)
+    _registry: Dict[str, "Tag"] = {}
     
     def __init__(self, name: str):
         """
@@ -53,7 +53,7 @@ class Tag:
         """
         self.name = name
         # Auto-register
-        Tag._registry.add(name)
+        Tag._registry[name] = self
     
     @classmethod
     def create(cls, name: str) -> "Tag":
@@ -63,15 +63,14 @@ class Tag:
     @classmethod
     def get_or_create(cls, name: str) -> "Tag":
         """Get existing tag or create new one."""
-        for tag_name in cls._registry:
-            if tag_name == name:
-                return cls(name)
+        if name in cls._registry:
+            return cls._registry[name]
         return cls(name)
     
     @classmethod
     def all_tags(cls) -> List[str]:
         """Get list of all registered tag names."""
-        return sorted(list(cls._registry))
+        return sorted(cls._registry.keys())
     
     @classmethod
     def clear_registry(cls) -> None:
@@ -333,7 +332,7 @@ class InspectorField(Generic[_T]):
         elif isinstance(field_type, type):
             # Check for GameObject first (before Component, since we need to import it)
             # Use string comparison to avoid circular import
-            if field_type.__name__ == 'GameObject' and field_type.__module__ == 'src.engine3d.gameobject':
+            if field_type.__name__ == 'GameObject' and 'gameobject' in field_type.__module__:
                 self.field_type = InspectorFieldType.GAMEOBJECT_REF
             elif field_type.__name__ == 'Material' and 'graphics.material' in field_type.__module__:
                 self.field_type = InspectorFieldType.MATERIAL_REF
@@ -590,7 +589,7 @@ class Component:
 
     def get_components(self, component_type: Type[T]) -> List[T]:
         if not self.game_object:
-            return None
+            return []
         return self.game_object.get_components(component_type)
 
     @classmethod
