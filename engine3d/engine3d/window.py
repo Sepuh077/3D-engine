@@ -185,6 +185,7 @@ class Window3D:
     uniform vec3 point_light_colors[MAX_POINT_LIGHTS];
     uniform float point_light_intensities[MAX_POINT_LIGHTS];
     uniform float point_light_ranges[MAX_POINT_LIGHTS];
+    uniform int point_light_shadow_slot[MAX_POINT_LIGHTS];
     
     uniform vec4 base_color;
     uniform sampler2D tex;
@@ -202,16 +203,31 @@ class Window3D:
     uniform sampler2DShadow shadow_map1;
     uniform sampler2DShadow shadow_map2;
     uniform sampler2DShadow shadow_map3;
-    uniform sampler2DShadow point_shadow_map0;
-    uniform sampler2DShadow point_shadow_map1;
-    uniform sampler2DShadow point_shadow_map2;
-    uniform sampler2DShadow point_shadow_map3;
-    uniform sampler2DShadow point_shadow_face0;
+    // Per-slot point shadow face samplers (6 faces per shadow slot)
+    uniform sampler2DShadow point_shadow_face0;  // slot 0
     uniform sampler2DShadow point_shadow_face1;
     uniform sampler2DShadow point_shadow_face2;
     uniform sampler2DShadow point_shadow_face3;
     uniform sampler2DShadow point_shadow_face4;
     uniform sampler2DShadow point_shadow_face5;
+    uniform sampler2DShadow point_shadow_s1_face0;  // slot 1
+    uniform sampler2DShadow point_shadow_s1_face1;
+    uniform sampler2DShadow point_shadow_s1_face2;
+    uniform sampler2DShadow point_shadow_s1_face3;
+    uniform sampler2DShadow point_shadow_s1_face4;
+    uniform sampler2DShadow point_shadow_s1_face5;
+    uniform sampler2DShadow point_shadow_s2_face0;  // slot 2
+    uniform sampler2DShadow point_shadow_s2_face1;
+    uniform sampler2DShadow point_shadow_s2_face2;
+    uniform sampler2DShadow point_shadow_s2_face3;
+    uniform sampler2DShadow point_shadow_s2_face4;
+    uniform sampler2DShadow point_shadow_s2_face5;
+    uniform sampler2DShadow point_shadow_s3_face0;  // slot 3
+    uniform sampler2DShadow point_shadow_s3_face1;
+    uniform sampler2DShadow point_shadow_s3_face2;
+    uniform sampler2DShadow point_shadow_s3_face3;
+    uniform sampler2DShadow point_shadow_s3_face4;
+    uniform sampler2DShadow point_shadow_s3_face5;
     uniform int num_shadow_lights;
     uniform int shadow_light_type0;
     uniform int shadow_light_type1;
@@ -365,7 +381,10 @@ class Window3D:
             proj_coords.y < 0.0 || proj_coords.y > 1.0) {
             return 0.0;
         }
-        float depth = (current_depth - shadow_bias0) / shadow_far0;
+        // Angle+distance dependent bias: steeper surfaces and farther objects need more
+        float NdotL = max(dot(normalize(frag_normal), -sample_dir), 0.0);
+        float bias = shadow_bias0 + current_depth * 0.003 * (1.0 - NdotL);
+        float depth = (current_depth - bias) / shadow_far0;
         float shadow = 0.0;
         if (face == 0) shadow = texture(point_shadow_face0, vec3(proj_coords, depth));
         else if (face == 1) shadow = texture(point_shadow_face1, vec3(proj_coords, depth));
@@ -389,14 +408,16 @@ class Window3D:
             proj_coords.y < 0.0 || proj_coords.y > 1.0) {
             return 0.0;
         }
-        float depth = (current_depth - shadow_bias1) / shadow_far1;
+        float NdotL = max(dot(normalize(frag_normal), -sample_dir), 0.0);
+        float bias = shadow_bias1 + current_depth * 0.003 * (1.0 - NdotL);
+        float depth = (current_depth - bias) / shadow_far1;
         float shadow = 0.0;
-        if (face == 0) shadow = texture(point_shadow_face0, vec3(proj_coords, depth));
-        else if (face == 1) shadow = texture(point_shadow_face1, vec3(proj_coords, depth));
-        else if (face == 2) shadow = texture(point_shadow_face2, vec3(proj_coords, depth));
-        else if (face == 3) shadow = texture(point_shadow_face3, vec3(proj_coords, depth));
-        else if (face == 4) shadow = texture(point_shadow_face4, vec3(proj_coords, depth));
-        else shadow = texture(point_shadow_face5, vec3(proj_coords, depth));
+        if (face == 0) shadow = texture(point_shadow_s1_face0, vec3(proj_coords, depth));
+        else if (face == 1) shadow = texture(point_shadow_s1_face1, vec3(proj_coords, depth));
+        else if (face == 2) shadow = texture(point_shadow_s1_face2, vec3(proj_coords, depth));
+        else if (face == 3) shadow = texture(point_shadow_s1_face3, vec3(proj_coords, depth));
+        else if (face == 4) shadow = texture(point_shadow_s1_face4, vec3(proj_coords, depth));
+        else shadow = texture(point_shadow_s1_face5, vec3(proj_coords, depth));
         return 1.0 - shadow;
     }
     
@@ -413,14 +434,16 @@ class Window3D:
             proj_coords.y < 0.0 || proj_coords.y > 1.0) {
             return 0.0;
         }
-        float depth = (current_depth - shadow_bias2) / shadow_far2;
+        float NdotL = max(dot(normalize(frag_normal), -sample_dir), 0.0);
+        float bias = shadow_bias2 + current_depth * 0.003 * (1.0 - NdotL);
+        float depth = (current_depth - bias) / shadow_far2;
         float shadow = 0.0;
-        if (face == 0) shadow = texture(point_shadow_face0, vec3(proj_coords, depth));
-        else if (face == 1) shadow = texture(point_shadow_face1, vec3(proj_coords, depth));
-        else if (face == 2) shadow = texture(point_shadow_face2, vec3(proj_coords, depth));
-        else if (face == 3) shadow = texture(point_shadow_face3, vec3(proj_coords, depth));
-        else if (face == 4) shadow = texture(point_shadow_face4, vec3(proj_coords, depth));
-        else shadow = texture(point_shadow_face5, vec3(proj_coords, depth));
+        if (face == 0) shadow = texture(point_shadow_s2_face0, vec3(proj_coords, depth));
+        else if (face == 1) shadow = texture(point_shadow_s2_face1, vec3(proj_coords, depth));
+        else if (face == 2) shadow = texture(point_shadow_s2_face2, vec3(proj_coords, depth));
+        else if (face == 3) shadow = texture(point_shadow_s2_face3, vec3(proj_coords, depth));
+        else if (face == 4) shadow = texture(point_shadow_s2_face4, vec3(proj_coords, depth));
+        else shadow = texture(point_shadow_s2_face5, vec3(proj_coords, depth));
         return 1.0 - shadow;
     }
     
@@ -437,14 +460,16 @@ class Window3D:
             proj_coords.y < 0.0 || proj_coords.y > 1.0) {
             return 0.0;
         }
-        float depth = (current_depth - shadow_bias3) / shadow_far3;
+        float NdotL = max(dot(normalize(frag_normal), -sample_dir), 0.0);
+        float bias = shadow_bias3 + current_depth * 0.003 * (1.0 - NdotL);
+        float depth = (current_depth - bias) / shadow_far3;
         float shadow = 0.0;
-        if (face == 0) shadow = texture(point_shadow_face0, vec3(proj_coords, depth));
-        else if (face == 1) shadow = texture(point_shadow_face1, vec3(proj_coords, depth));
-        else if (face == 2) shadow = texture(point_shadow_face2, vec3(proj_coords, depth));
-        else if (face == 3) shadow = texture(point_shadow_face3, vec3(proj_coords, depth));
-        else if (face == 4) shadow = texture(point_shadow_face4, vec3(proj_coords, depth));
-        else shadow = texture(point_shadow_face5, vec3(proj_coords, depth));
+        if (face == 0) shadow = texture(point_shadow_s3_face0, vec3(proj_coords, depth));
+        else if (face == 1) shadow = texture(point_shadow_s3_face1, vec3(proj_coords, depth));
+        else if (face == 2) shadow = texture(point_shadow_s3_face2, vec3(proj_coords, depth));
+        else if (face == 3) shadow = texture(point_shadow_s3_face3, vec3(proj_coords, depth));
+        else if (face == 4) shadow = texture(point_shadow_s3_face4, vec3(proj_coords, depth));
+        else shadow = texture(point_shadow_s3_face5, vec3(proj_coords, depth));
         return 1.0 - shadow;
     }
     
@@ -472,55 +497,42 @@ class Window3D:
             // Directional light
             vec3 dir_light_dir = normalize(-light_dir);
             
-            // Calculate shadow factor from all shadow-casting lights
-            float total_shadow = 0.0;
+            // Directional shadow factor (only from directional shadow lights)
+            float dir_shadow = 0.0;
             if (shadows_enabled && receive_shadows && num_shadow_lights > 0) {
-                // Unrolled loop for GLSL 330 compatibility
-                if (num_shadow_lights > 0) {
-                    if (shadow_light_type0 == 0) {
-                        total_shadow += calculate_directional_shadow_0(normal, shadow_light_dir0);
-                    } else {
-                        total_shadow += calculate_point_shadow_0();
-                    }
+                int dir_shadow_count = 0;
+                if (num_shadow_lights > 0 && shadow_light_type0 == 0) {
+                    dir_shadow += calculate_directional_shadow_0(normal, shadow_light_dir0);
+                    dir_shadow_count++;
                 }
-                if (num_shadow_lights > 1) {
-                    if (shadow_light_type1 == 0) {
-                        total_shadow += calculate_directional_shadow_1(normal, shadow_light_dir1);
-                    } else {
-                        total_shadow += calculate_point_shadow_1();
-                    }
+                if (num_shadow_lights > 1 && shadow_light_type1 == 0) {
+                    dir_shadow += calculate_directional_shadow_1(normal, shadow_light_dir1);
+                    dir_shadow_count++;
                 }
-                if (num_shadow_lights > 2) {
-                    if (shadow_light_type2 == 0) {
-                        total_shadow += calculate_directional_shadow_2(normal, shadow_light_dir2);
-                    } else {
-                        total_shadow += calculate_point_shadow_2();
-                    }
+                if (num_shadow_lights > 2 && shadow_light_type2 == 0) {
+                    dir_shadow += calculate_directional_shadow_2(normal, shadow_light_dir2);
+                    dir_shadow_count++;
                 }
-                if (num_shadow_lights > 3) {
-                    if (shadow_light_type3 == 0) {
-                        total_shadow += calculate_directional_shadow_3(normal, shadow_light_dir3);
-                    } else {
-                        total_shadow += calculate_point_shadow_3();
-                    }
+                if (num_shadow_lights > 3 && shadow_light_type3 == 0) {
+                    dir_shadow += calculate_directional_shadow_3(normal, shadow_light_dir3);
+                    dir_shadow_count++;
                 }
-                // Average the shadow contribution
-                total_shadow = min(total_shadow / float(num_shadow_lights), 1.0);
+                if (dir_shadow_count > 0) {
+                    dir_shadow = min(dir_shadow / float(dir_shadow_count), 1.0);
+                }
             }
             
             float dir_diffuse = max(dot(normal, dir_light_dir), 0.0);
-            // Apply shadow to directional light only (reduce diffuse by shadow amount)
-            vec3 diffuse_light = light_color * (ambient + dir_diffuse * (1.0 - ambient) * (1.0 - total_shadow));
+            vec3 diffuse_light = light_color * (ambient + dir_diffuse * (1.0 - ambient) * (1.0 - dir_shadow));
             
             vec3 specular_light = vec3(0.0);
             if (material_type == 2) { // Specular
                 vec3 reflect_dir = reflect(-dir_light_dir, normal);
                 float spec = pow(max(dot(view_dir, reflect_dir), 0.0), shininess);
-                // Reduce specular in shadow
-                specular_light += light_color * spec * specular_color * (1.0 - total_shadow);
+                specular_light += light_color * spec * specular_color * (1.0 - dir_shadow);
             }
 
-            // Point lights (attenuated by total_shadow which includes point light shadows when active)
+            // Point lights with per-light shadow
             for (int i = 0; i < num_point_lights; ++i) {
                 vec3 light_vec = point_light_positions[i] - frag_position;
                 float distance = length(light_vec);
@@ -528,11 +540,18 @@ class Window3D:
                     vec3 pl_dir = normalize(light_vec);
                     float pl_diffuse = max(dot(normal, pl_dir), 0.0);
                     
-                    // Attenuation (quadratic mix)
                     float attenuation = 1.0 - (distance / point_light_ranges[i]);
-                    attenuation = attenuation * attenuation; // Smooth falloff
+                    attenuation = attenuation * attenuation;
                     
-                    float pl_shadow = total_shadow; // reuse combined shadow factor
+                    // Per-light shadow from this point light's own shadow map
+                    float pl_shadow = 0.0;
+                    if (shadows_enabled && receive_shadows) {
+                        int slot = point_light_shadow_slot[i];
+                        if (slot == 0) pl_shadow = calculate_point_shadow_0();
+                        else if (slot == 1) pl_shadow = calculate_point_shadow_1();
+                        else if (slot == 2) pl_shadow = calculate_point_shadow_2();
+                        else if (slot == 3) pl_shadow = calculate_point_shadow_3();
+                    }
                     diffuse_light += point_light_colors[i] * pl_diffuse * point_light_intensities[i] * attenuation * (1.0 - pl_shadow);
 
                     if (material_type == 2) { // Specular
@@ -2223,6 +2242,11 @@ class Window3D:
         # Begin shadow pass
         shadow_map.begin()
         
+        # Cull front faces: only back faces write to the shadow map,
+        # preventing surfaces from shadowing themselves (shadow acne)
+        self._ctx.enable(moderngl.CULL_FACE)
+        self._ctx.cull_face = 'front'
+        
         # Render all 6 faces
         for face_idx in range(6):
             shadow_map.begin_face(face_idx)
@@ -2251,6 +2275,10 @@ class Window3D:
             self._render_shadow_casters(objects)
             
             shadow_map.end_face()
+        
+        # Restore culling state
+        self._ctx.cull_face = 'back'
+        self._ctx.disable(moderngl.CULL_FACE)
         
         # End shadow pass
         shadow_map.end()
@@ -2514,6 +2542,19 @@ class Window3D:
                         program['point_light_intensities'].write(np.array(int_vals, dtype='f4').tobytes())
                     if 'point_light_ranges' in program:
                         program['point_light_ranges'].write(np.array(range_vals, dtype='f4').tobytes())
+                    
+                    # Map each point light index to its shadow slot (-1 = no shadow)
+                    if 'point_light_shadow_slot' in program and shadows_active:
+                        shadow_slots = [-1, -1, -1, -1]
+                        for i in range(num_pl):
+                            pl = point_lights[i]
+                            for j, sl in enumerate(shadow_lights[:4]):
+                                if sl is pl:
+                                    shadow_slots[i] = j
+                                    break
+                        program['point_light_shadow_slot'].write(np.array(shadow_slots, dtype='i4').tobytes())
+                    elif 'point_light_shadow_slot' in program:
+                        program['point_light_shadow_slot'].write(np.array([-1, -1, -1, -1], dtype='i4').tobytes())
             
             # Shadow uniforms - multi-light support
             if 'shadows_enabled' in program:
@@ -2583,14 +2624,18 @@ class Window3D:
         if shadows_active:
             # Track which texture units are used for which light index
             dir_shadow_units = [5, 6, 7, 8]  # Texture units for directional shadow maps
-            point_shadow_units = [10, 11, 12, 13]  # Texture units for point shadow maps (face0 fallback)
-            point_face_units = [10, 11, 12, 13, 14, 15]  # 6 units for full omni point shadow faces of first point light
+            # Per-slot face texture units (6 faces per shadow slot, non-overlapping)
+            slot_face_units = [
+                [16, 17, 18, 19, 20, 21],   # slot 0
+                [22, 23, 24, 25, 26, 27],   # slot 1
+                [28, 29, 30, 31, 32, 33],   # slot 2
+                [34, 35, 36, 37, 38, 39],   # slot 3
+            ]
             
             dir_idx = 0
-            point_idx = 0
-            point_faces_bound = False
+            point_slots_bound = set()
             
-            for sl in shadow_lights[:4]:
+            for idx, sl in enumerate(shadow_lights[:4]):
                 if isinstance(sl, DirectionalLight3D):
                     shadow_map = self._shadow_maps.get(id(sl))
                     if shadow_map and dir_idx < 4:
@@ -2604,34 +2649,20 @@ class Window3D:
                 elif isinstance(sl, PointLight3D):
                     shadow_map = self._point_shadow_maps.get(id(sl))
                     if shadow_map:
-                        if not point_faces_bound:
-                            # Bind all 6 faces for proper omnidirectional shadows (first point shadow light only)
-                            for f in range(6):
-                                tex = shadow_map.get_depth_texture(f)
-                                if tex:
-                                    tex.use(location=point_face_units[f])
-                                    if f < 6 and 'point_shadow_faces' in self._program:
-                                        # Note: array uniform set below after loop or individually
-                                        pass
-                            # Set individual face samplers (GLSL 330 no dynamic array index)
-                            for f in range(6):
-                                fname = f'point_shadow_face{f}'
-                                if fname in self._program:
-                                    self._program[fname].value = point_face_units[f]
-                                if fname in self._instanced_program:
-                                    self._instanced_program[fname].value = point_face_units[f]
-                            point_faces_bound = True
-                        # Also bind face0 to legacy point_shadow_mapN for compatibility
-                        if point_idx < 4:
-                            shadow_map.use(location=point_shadow_units[point_idx])
-                            sampler_name = f'point_shadow_map{point_idx}'
-                            if sampler_name in self._program:
-                                self._program[sampler_name].value = point_shadow_units[point_idx]
-                            if sampler_name in self._instanced_program:
-                                self._instanced_program[sampler_name].value = point_shadow_units[point_idx]
-                            point_idx += 1
+                        units = slot_face_units[idx]
+                        for f in range(6):
+                            tex = shadow_map.get_depth_texture(f)
+                            if tex:
+                                tex.use(location=units[f])
+                        for f in range(6):
+                            fname = f'point_shadow_face{f}' if idx == 0 else f'point_shadow_s{idx}_face{f}'
+                            if fname in self._program:
+                                self._program[fname].value = units[f]
+                            if fname in self._instanced_program:
+                                self._instanced_program[fname].value = units[f]
+                        point_slots_bound.add(idx)
             
-            # Bind dummy textures for unused slots
+            # Bind dummy textures for unused directional slots
             dummy = self._get_dummy_shadow_texture()
             dummy_cubemap = self._get_dummy_shadow_cubemap()
             
@@ -2643,24 +2674,17 @@ class Window3D:
                 if sampler_name in self._instanced_program:
                     self._instanced_program[sampler_name].value = dir_shadow_units[i]
             
-            for i in range(point_idx, 4):
-                dummy_cubemap.use(location=point_shadow_units[i])
-                sampler_name = f'point_shadow_map{i}'
-                if sampler_name in self._program:
-                    self._program[sampler_name].value = point_shadow_units[i]
-                if sampler_name in self._instanced_program:
-                    self._instanced_program[sampler_name].value = point_shadow_units[i]
-            
-            # Dummy for point faces array if not bound by a point light
-            if not point_faces_bound:
-                for f in range(6):
-                    dummy_cubemap.use(location=point_face_units[f])
-                for f in range(6):
-                    fname = f'point_shadow_face{f}'
-                    if fname in self._program:
-                        self._program[fname].value = point_face_units[f]
-                    if fname in self._instanced_program:
-                        self._instanced_program[fname].value = point_face_units[f]
+            # Bind dummy textures for point shadow slots without a bound point light
+            for slot in range(4):
+                if slot not in point_slots_bound:
+                    units = slot_face_units[slot]
+                    for f in range(6):
+                        dummy_cubemap.use(location=units[f])
+                        fname = f'point_shadow_face{f}' if slot == 0 else f'point_shadow_s{slot}_face{f}'
+                        if fname in self._program:
+                            self._program[fname].value = units[f]
+                        if fname in self._instanced_program:
+                            self._instanced_program[fname].value = units[f]
         else:
             # When shadows are disabled, bind dummy textures
             dummy = self._get_dummy_shadow_texture()
@@ -2668,28 +2692,28 @@ class Window3D:
             
             for i in range(4):
                 dummy.use(location=5 + i)
-                dummy_cubemap.use(location=10 + i)
-                
                 dir_sampler = f'shadow_map{i}'
-                point_sampler = f'point_shadow_map{i}'
-                
                 if dir_sampler in self._program:
                     self._program[dir_sampler].value = 5 + i
                 if dir_sampler in self._instanced_program:
                     self._instanced_program[dir_sampler].value = 5 + i
-                if point_sampler in self._program:
-                    self._program[point_sampler].value = 10 + i
-                if point_sampler in self._instanced_program:
-                    self._instanced_program[point_sampler].value = 10 + i
             
-            # Set individual face samplers to dummies when shadows disabled
-            for f in range(6):
-                dummy_cubemap.use(location=10 + f)
-                fname = f'point_shadow_face{f}'
-                if fname in self._program:
-                    self._program[fname].value = 10 + f
-                if fname in self._instanced_program:
-                    self._instanced_program[fname].value = 10 + f
+            # Bind dummies for all per-slot point shadow face samplers
+            slot_face_units_disabled = [
+                [16, 17, 18, 19, 20, 21],
+                [22, 23, 24, 25, 26, 27],
+                [28, 29, 30, 31, 32, 33],
+                [34, 35, 36, 37, 38, 39],
+            ]
+            for slot in range(4):
+                units = slot_face_units_disabled[slot]
+                for f in range(6):
+                    dummy_cubemap.use(location=units[f])
+                    fname = f'point_shadow_face{f}' if slot == 0 else f'point_shadow_s{slot}_face{f}'
+                    if fname in self._program:
+                        self._program[fname].value = units[f]
+                    if fname in self._instanced_program:
+                        self._instanced_program[fname].value = units[f]
 
         # ------------------------------------------------------------
         # Visibility + culling + Sorting
